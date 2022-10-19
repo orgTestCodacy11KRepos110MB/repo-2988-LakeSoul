@@ -107,6 +107,13 @@
             <scope>${local.scope}</scope>
         </dependency>
         <dependency>
+            <groupId>com.ververica</groupId>
+            <artifactId>flink-sql-connector-oracle-cdc</artifactId>
+            <!-- the dependency is available only for stable releases. -->
+            <version>2.3-SNAPSHOT</version>
+            <scope>${local.scope}</scope>
+        </dependency>
+        <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-table-planner_2.12</artifactId>
             <version>${flink.version}</version>
@@ -130,7 +137,6 @@
             <version>${flink.version}</version>
             <scope>test</scope>
         </dependency>
-
         <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
@@ -237,6 +243,8 @@
                             <include>com.fasterxml.jackson.module:jackson-module-scala_2.12</include>
                             <include>com.fasterxml.jackson.module:jackson-module-paranamer</include>
                             <include>commons-lang:commons-lang</include>
+                            <include>com.ververica:flink-connector-oracle-cdc</include>
+
                         </includes>
                         <excludes>
                             <exclude>org/slf4j/impl/**</exclude>

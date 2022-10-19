@@ -24,6 +24,7 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.planner.codegen.sort.SortCodeGenerator;
 import org.apache.flink.table.planner.plan.nodes.exec.spec.SortSpec;
 import org.apache.flink.table.runtime.generated.GeneratedRecordComparator;
+import org.apache.flink.table.types.logical.DecimalType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.spark.sql.catalyst.expressions.Murmur3HashFunction;
@@ -84,8 +85,8 @@ public class LakeSoulKeyGen implements Serializable {
   }
 
   public static long getHash(LogicalType type, Object field, long seed) {
-
     switch (type.getTypeRoot()) {
+      case DECIMAL:
       case VARCHAR:
         UTF8String utf8String = UTF8String.fromString(java.lang.String.valueOf(field));
         seed = Murmur3HashFunction.hash(utf8String, StringType, seed);
