@@ -193,6 +193,7 @@ public class LakeSoulRecordConvert implements Serializable {
             case MicroTimestamp.SCHEMA_NAME:
             case NanoTimestamp.SCHEMA_NAME:           //timestamp
                 return new TimestampType(9);
+            case VariableScaleDecimal.LOGICAL_NAME:
             case Decimal.LOGICAL_NAME:
                 Map<String,String> paras= ((ConnectSchema) fieldSchema).parameters();
                 return  new DecimalType(Integer.parseInt(paras.get("connect.decimal.precision")),Integer.parseInt(paras.get("scale")));
@@ -390,6 +391,7 @@ public class LakeSoulRecordConvert implements Serializable {
             case MicroTimestamp.SCHEMA_NAME:
             case NanoTimestamp.SCHEMA_NAME:           //timestamp
                 return convertToTimeStamp(fieldValue, fieldSchema);
+            case VariableScaleDecimal.LOGICAL_NAME:
             case Decimal.LOGICAL_NAME:
                 return convertToDecimal(fieldValue, fieldSchema);
             case Date.SCHEMA_NAME:
