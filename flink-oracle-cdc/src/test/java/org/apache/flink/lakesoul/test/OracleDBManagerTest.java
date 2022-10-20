@@ -1,6 +1,9 @@
 package org.apache.flink.lakesoul.test;
 
 import com.dmetasoul.lakesoul.meta.DBManager;
+import io.debezium.config.Configuration;
+import io.debezium.jdbc.JdbcConfiguration;
+import io.debezium.jdbc.JdbcConnection;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.lakesoul.OracleDBManager;
 import org.apache.flink.lakesoul.tool.JobOptions;
@@ -41,5 +44,7 @@ public class OracleDBManagerTest {
         dbManager.listNamespace().forEach(System.out::println);
         dbManager.listTables().forEach(System.out::println);
         dbManager.importOrSyncLakeSoulTable("COUNTRIES_DEMO");
+
+        System.out.println(lakesoulDBManager.listTablePathsByNamespace(dbName));
     }
 }

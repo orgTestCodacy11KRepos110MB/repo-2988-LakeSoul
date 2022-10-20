@@ -7,9 +7,14 @@ import com.dmetasoul.lakesoul.meta.entity.DataBaseProperty;
 import com.dmetasoul.lakesoul.meta.entity.TableNameId;
 import com.dmetasoul.lakesoul.meta.external.DBConnector;
 import io.debezium.connector.oracle.antlr.OracleDdlParser;
+import io.debezium.jdbc.JdbcConnection;
 import io.debezium.relational.Table;
+import io.debezium.relational.TableId;
 import io.debezium.relational.Tables;
+import io.debezium.relational.Column;
+import io.debezium.relational.ColumnEditor;
 
+import io.debezium.util.Collect;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.spark.sql.Dataset;
@@ -22,10 +27,7 @@ import org.apache.spark.sql.types.StructType;
 import org.apache.flink.api.java.tuple.Tuple2;
 
 import java.io.IOException;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
+import java.sql.*;
 import java.util.*;
 
 public class OracleDBManager {
@@ -35,7 +37,7 @@ public class OracleDBManager {
 
     public static final int DEFAULT_ORACLE_PORT = 1521;
     private final DBConnector dbConnector;
-    private final SparkSession spark;
+//    private final SparkSession spark;
 
 
     private final DBManager lakesoulDBManager = new DBManager();
@@ -76,10 +78,10 @@ public class OracleDBManager {
         dataBaseProperty.setPassword(passwd);
         dbConnector = new DBConnector(dataBaseProperty);
 
-        spark = SparkSession
-                .builder()
-                .master("local[1]")
-                .getOrCreate();
+//        spark = SparkSession
+//                .builder()
+//                .master("local[1]")
+//                .getOrCreate();
 
         lakesoulTablePathPrefix = pathPrefix;
         this.hashBucketNum = hashBucketNum;
@@ -173,24 +175,20 @@ public class OracleDBManager {
         return result;
     }
 
-    public void importOrSyncLakeSoulTable(String tableName) {
+    public void importOrSyncLakeSoulTable(String tableName) throws SQLException {
         if (!includeTables.contains(tableName) && excludeTables.contains(tableName)) {
             System.out.println(String.format("Table %s is excluded by exclude table list", tableName));
             return;
         }
-//        String ddl = showCreateTable(tableName);
-//        System.out.println(ddl);
-        StructType schema = spark
-                .read()
-                .format("jdbc")
-                .option("url", dataBaseProperty.getUrl())
-                .option("dbtable", tableName)
-                .option("user", dataBaseProperty.getUsername())
-                .option("password", dataBaseProperty.getPassword())
-                .option("driver", dataBaseProperty.getDriver())
-                .load()
-                .schema();
 
+        List<Column> columns = readSchema(tableName);
+        List<String> priKeys = readPrimaryKeyNames(tableName);
+        StructType schema = columnsToSparkSchema(columns);
+        System.out.println(priKeys);
+
+        if (priKeys.isEmpty()) {
+            throw new IllegalStateException(String.format("Table %s has no primary key, table with no Primary Keys is not supported", tableName));
+        }
 
         boolean exists = lakesoulDBManager.isTableExistsByTableName(tableName, dbName);
         if (exists) {
@@ -204,14 +202,9 @@ public class OracleDBManager {
             try {
                 String tableId = EXTERNAL_ORACLE_TABLE_PREFIX + UUID.randomUUID();
 
-                String qualifiedPath =
-                        FlinkUtil.makeQualifiedPath(new Path(new Path(
-                                lakesoulTablePathPrefix, dbName
-                        ), tableName)).toString();
-
+                String qualifiedPath =lakesoulTablePathPrefix;
 
                 String tableSchema = schema.json();
-                List<String> priKeys = List.of("");
                 String partitionsInTableInfo = ";" + String.join(",", priKeys);
                 JSONObject json = new JSONObject();
                 json.put("hashBucketNum", String.valueOf(hashBucketNum));
@@ -221,7 +214,7 @@ public class OracleDBManager {
                         tableSchema,
                         json, partitionsInTableInfo
                 );
-            } catch (IOException e) {
+            } catch (Exception e) {
                 throw new RuntimeException(e);
             }
         }
@@ -250,5 +243,136 @@ public class OracleDBManager {
             stNew[0] = stNew[0].add("rowKinds", DataTypes.StringType, true);
         }
         return Tuple2.of(stNew[0], table.primaryKeyColumnNames());
+    }
+
+    public StructType columnsToSparkSchema(List<Column> columns) {
+        final StructType[] stNew = {new StructType()};
+
+        columns.forEach(col -> {
+                    String name = col.name();
+                    DataType datatype = converter.schemaBuilder(col);
+                    if (datatype == null) {
+                        throw new IllegalStateException("Unhandled data types");
+                    }
+                    stNew[0] = stNew[0].add(name, datatype, col.isOptional());
+                });
+        //if uescdc add lakesoulcdccolumns
+        if (useCdc) {
+            stNew[0] = stNew[0].add("rowKinds", DataTypes.StringType, true);
+        }
+        return stNew[0];
+    }
+
+    private List<Column> readSchema(String tableName){
+        Connection conn = null;
+        List<Column> list = new ArrayList<>();
+        ResultSet columnMetadata = null;
+        try {
+
+            conn = dbConnector.getConn();
+            DatabaseMetaData metadata = conn.getMetaData();
+            columnMetadata = metadata.getColumns("", dataBaseProperty.getUsername().toUpperCase(), tableName, "%");
+            while (columnMetadata.next()) {
+                String defaultValue = columnMetadata.getString(13);
+                String columnName = columnMetadata.getString(4);
+
+                ColumnEditor column = Column.editor().name(columnName);
+                column.type(columnMetadata.getString(6));
+                column.length(columnMetadata.getInt(7));
+                if (columnMetadata.getObject(9) != null) {
+                    column.scale(columnMetadata.getInt(9));
+                }
+
+                column.optional(isNullable(columnMetadata.getInt(11)));
+                column.position(columnMetadata.getInt(17));
+//                column.autoIncremented("YES".equalsIgnoreCase(columnMetadata.getString(23)));
+//                String autogenerated = null;
+
+//                autogenerated = columnMetadata.getString(24);
+
+
+//                column.generated("YES".equalsIgnoreCase(autogenerated));
+                column.nativeType(this.resolveNativeType(column.typeName()));
+                column.jdbcType(this.resolveJdbcType(columnMetadata.getInt(5), column.nativeType()));
+                if (defaultValue != null) {
+                    this.getDefaultValue(column.create(), defaultValue).ifPresent(column::defaultValue);
+                }
+
+                list.add(column.create());
+            }
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            dbConnector.closeConn(conn);
+            return list;
+        }
+    }
+
+    public List<String> readPrimaryKeyNames(String tableName) throws SQLException {
+        Connection conn = null;
+        List<String> list = new ArrayList<>();
+        ResultSet rs = null;
+        try{
+            conn = dbConnector.getConn();
+            DatabaseMetaData metadata = conn.getMetaData();
+            rs = metadata.getPrimaryKeys("", dataBaseProperty.getUsername().toUpperCase(), tableName);
+            while(rs.next()) {
+                String columnName = rs.getString(4);
+                int columnIndex = rs.getInt(5);
+                Collect.set(list, columnIndex - 1, columnName,  null);
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            dbConnector.closeConn(conn);
+            return list;
+        }
+    }
+
+    protected static boolean isNullable(int jdbcNullable) {
+        return jdbcNullable == ResultSetMetaData.columnNullable || jdbcNullable == ResultSetMetaData.columnNullableUnknown;
+    }
+
+    /**
+     * Provides a native type for the given type name.
+     *
+     * There isn't a standard way to obtain this information via JDBC APIs so this method exists to allow
+     * database specific information to be set in addition to the JDBC Type.
+     *
+     * @param typeName the name of the type whose native type we are looking for
+     * @return A type constant for the specific database or -1.
+     */
+    protected int resolveNativeType(String typeName) {
+        return Column.UNSET_INT_VALUE;
+    }
+
+
+    /**
+     * Resolves the supplied metadata JDBC type to a final JDBC type.
+     *
+     * @param metadataJdbcType the JDBC type from the underlying driver's metadata lookup
+     * @param nativeType the database native type or -1 for unknown
+     * @return the resolved JDBC type
+     */
+    protected int resolveJdbcType(int metadataJdbcType, int nativeType) {
+        return metadataJdbcType;
+    }
+
+    /**
+     * Allow implementations an opportunity to adjust the current state of the {@link ColumnEditor}
+     * that has been seeded with data from the column metadata from the JDBC driver.  In some
+     * cases, the data from the driver may be misleading and needs some adjustments.
+     *
+     * @param column the column editor, should not be {@code null}
+     * @return the adjusted column editor instance
+     */
+    protected ColumnEditor overrideColumn(ColumnEditor column) {
+        // allows the implementation to override column-specifics; the default does no overrides
+        return column;
+    }
+
+    protected Optional<Object> getDefaultValue(Column column, String defaultValue) {
+        return Optional.empty();
     }
 }
