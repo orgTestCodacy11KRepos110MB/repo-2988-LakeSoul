@@ -5,29 +5,21 @@ import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.entity.DataBaseProperty;
 import com.dmetasoul.lakesoul.meta.entity.TableNameId;
 import com.dmetasoul.lakesoul.meta.external.DBConnector;
-import io.debezium.connector.oracle.antlr.OracleDdlParser;
-import io.debezium.jdbc.JdbcConnection;
-import io.debezium.relational.Table;
-import io.debezium.relational.TableId;
-import io.debezium.relational.Tables;
+import com.dmetasoul.lakesoul.meta.external.ExternalDBManager;
 import io.debezium.relational.Column;
 import io.debezium.relational.ColumnEditor;
 
 import io.debezium.util.Collect;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
-import org.apache.spark.sql.Row;
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructType;
 
-import org.apache.flink.api.java.tuple.Tuple2;
-
-import java.io.IOException;
 import java.sql.*;
 import java.util.*;
 
-public class OracleDBManager {
+public class OracleDBManager implements ExternalDBManager {
 
     private static final String EXTERNAL_ORACLE_TABLE_PREFIX = "external_oracle_table_";
 
@@ -104,6 +96,7 @@ public class OracleDBManager {
         return opened;
     }
 
+    @Override
     public List<String> listTables() {
         Connection conn = null;
         PreparedStatement pstmt = null;
@@ -170,7 +163,8 @@ public class OracleDBManager {
         return result;
     }
 
-    public void importOrSyncLakeSoulTable(String tableName) throws SQLException {
+    @Override
+    public void importOrSyncLakeSoulTable(String tableName) {
         if (!includeTables.contains(tableName) && excludeTables.contains(tableName)) {
             System.out.println(String.format("Table %s is excluded by exclude table list", tableName));
             return;
@@ -197,7 +191,10 @@ public class OracleDBManager {
             try {
                 String tableId = EXTERNAL_ORACLE_TABLE_PREFIX + UUID.randomUUID();
 
-                String qualifiedPath =lakesoulTablePathPrefix;
+                String qualifiedPath =
+                        FlinkUtil.makeQualifiedPath(new Path(new Path(
+                                lakesoulTablePathPrefix, dbName
+                        ), tableName)).toString();
 
                 String tableSchema = schema.json();
                 String partitionsInTableInfo = ";" + String.join(",", priKeys);
@@ -215,8 +212,12 @@ public class OracleDBManager {
         }
     }
 
+    @Override
     public void importOrSyncLakeSoulNamespace(String namespace) {
-
+        if (lakesoulDBManager.getNamespaceByNamespace(namespace) != null) {
+            return;
+        }
+        lakesoulDBManager.createNewNamespace(namespace, new JSONObject(), "");
     }
 
 
@@ -284,7 +285,7 @@ public class OracleDBManager {
         }
     }
 
-    public List<String> readPrimaryKeyNames(String tableName) throws SQLException {
+    public List<String> readPrimaryKeyNames(String tableName) {
         Connection conn = null;
         List<String> list = new ArrayList<>();
         ResultSet rs = null;
