@@ -26,7 +26,6 @@ public class OracleDBManager implements ExternalDBManager {
 
     public static final int DEFAULT_ORACLE_PORT = 1521;
     private final DBConnector dbConnector;
-//    private final SparkSession spark;
 
 
     private final DBManager lakesoulDBManager = new DBManager();
@@ -64,11 +63,6 @@ public class OracleDBManager implements ExternalDBManager {
         dataBaseProperty.setUsername(user);
         dataBaseProperty.setPassword(passwd);
         dbConnector = new DBConnector(dataBaseProperty);
-
-//        spark = SparkSession
-//                .builder()
-//                .master("local[1]")
-//                .getOrCreate();
 
         lakesoulTablePathPrefix = pathPrefix;
         this.hashBucketNum = hashBucketNum;
