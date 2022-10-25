@@ -19,12 +19,12 @@ package com.dmetasoul.lakesoul.meta.external;
 
 import java.util.List;
 
-public interface ExternalDBManager {
+public abstract class ExternalDBManager {
 
-    List<String> listTables();
+    public abstract List<String> listTables();
 
 
-    void importOrSyncLakeSoulTable(String tableName);
+    public abstract void importOrSyncLakeSoulTable(String tableName);
 
-    void importOrSyncLakeSoulNamespace(String namespace);
+    public abstract void importOrSyncLakeSoulNamespace(String namespace);
 }

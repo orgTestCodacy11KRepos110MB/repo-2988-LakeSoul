@@ -19,7 +19,7 @@ import org.apache.spark.sql.types.StructType;
 import java.sql.*;
 import java.util.*;
 
-public class OracleDBManager implements ExternalDBManager {
+public class OracleDBManager extends ExternalDBManager {
 
     private static final String EXTERNAL_ORACLE_TABLE_PREFIX = "external_oracle_table_";
 
@@ -157,8 +157,9 @@ public class OracleDBManager implements ExternalDBManager {
         return result;
     }
 
-    @Override
     public void importOrSyncLakeSoulTable(String tableName) {
+        System.out.println(tableName);
+        System.out.println(excludeTables);
         if (!includeTables.contains(tableName) && excludeTables.contains(tableName)) {
             System.out.println(String.format("Table %s is excluded by exclude table list", tableName));
             return;
@@ -206,7 +207,6 @@ public class OracleDBManager implements ExternalDBManager {
         }
     }
 
-    @Override
     public void importOrSyncLakeSoulNamespace(String namespace) {
         if (lakesoulDBManager.getNamespaceByNamespace(namespace) != null) {
             return;

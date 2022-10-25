@@ -42,7 +42,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.*;
 
-public class MysqlDBManager implements ExternalDBManager {
+public class MysqlDBManager extends ExternalDBManager {
 
     private static final String EXTERNAL_MYSQL_TABLE_PREFIX = "external_mysql_table_";
     public static final int DEFAULT_MYSQL_PORT = 3306;
@@ -109,7 +109,6 @@ public class MysqlDBManager implements ExternalDBManager {
         this.useCdc = useCdc;
     }
 
-
     @Override
     public List<String> listTables() {
         Connection conn = null;
@@ -136,7 +135,6 @@ public class MysqlDBManager implements ExternalDBManager {
     }
 
 
-    @Override
     public void importOrSyncLakeSoulTable(String tableName) {
         if (!includeTables.contains(tableName) && excludeTables.contains(tableName)) {
             System.out.println(String.format("Table %s is excluded by exclude table list", tableName));
@@ -183,7 +181,6 @@ public class MysqlDBManager implements ExternalDBManager {
         }
     }
 
-    @Override
     public void importOrSyncLakeSoulNamespace(String namespace) {
         if (lakesoulDBManager.getNamespaceByNamespace(namespace) != null) {
             return;
