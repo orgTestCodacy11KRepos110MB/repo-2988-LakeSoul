@@ -49,4 +49,16 @@ public class LakeSoulDDLSinkOptions extends LakeSoulSinkOptions{
             .withDescription("list of source database excluded tables. Comma-Separated string");
 
 
+    public static final ConfigOption<String> SOURCE_DB_DB_SCHEMA= ConfigOptions
+            .key("source_db.db_schema")
+            .stringType()
+            .noDefaultValue()
+            .withDescription("source database schema");
+
+    public static final ConfigOption<String> SOURCE_DB_TYPE= ConfigOptions
+            .key("source_db.db_type")
+            .stringType()
+            .noDefaultValue()
+            .withDescription("source database type");
+
 }
