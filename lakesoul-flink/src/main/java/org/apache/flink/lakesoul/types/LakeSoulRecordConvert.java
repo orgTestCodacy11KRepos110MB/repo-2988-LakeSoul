@@ -196,6 +196,9 @@ public class LakeSoulRecordConvert implements Serializable {
             case VariableScaleDecimal.LOGICAL_NAME:
             case Decimal.LOGICAL_NAME:
                 Map<String,String> paras= ((ConnectSchema) fieldSchema).parameters();
+                if (paras == null) {
+                    return new DecimalType(3, 2);
+                }
                 return  new DecimalType(Integer.parseInt(paras.get("connect.decimal.precision")),Integer.parseInt(paras.get("scale")));
             case Date.SCHEMA_NAME:
                 return new DateType();
@@ -447,6 +450,9 @@ public class LakeSoulRecordConvert implements Serializable {
             }
         }
         Map<String,String> paras= ((ConnectSchema) schema).parameters();
+        if (paras == null) {
+            return DecimalData.fromBigDecimal(bigDecimal, 3, 2);
+        }
         return DecimalData.fromBigDecimal(bigDecimal, Integer.parseInt(paras.get("connect.decimal.precision")),Integer.parseInt(paras.get("scale")));
     }
 
