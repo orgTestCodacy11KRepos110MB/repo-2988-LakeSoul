@@ -50,6 +50,8 @@ public class FlinkCdcEntry {
                 JOB_CHECKPOINT_INTERVAL.defaultValue());     //mill second
 
         // import source database catalog info
+        Configuration conf = new Configuration();
+
         ExternalDBManager dbManager = null;
         if (cdcSource.equals("mysql")) {
             dbManager = new MysqlDBManager(dbName,
@@ -61,7 +63,7 @@ public class FlinkCdcEntry {
                     databasePrefixPath,
                     bucketParallelism,
                     true);
-        } else if (cdcSource.equals("oracle_11g")) {
+        } else if (cdcSource.equals("oracle")) {
             dbManager = new OracleDBManager(dbName,
                     userName,
                     passWord,
@@ -83,8 +85,6 @@ public class FlinkCdcEntry {
         }
         tableList.forEach(dbManager::importOrSyncLakeSoulTable);
 
-        Configuration conf = new Configuration();
-
         // parameters for mutil tables ddl sink
         conf.set(SOURCE_DB_DB_NAME, dbName);
         conf.set(SOURCE_DB_USER, userName);
@@ -93,7 +93,7 @@ public class FlinkCdcEntry {
         conf.set(SOURCE_DB_PORT, port);
         conf.set(WAREHOUSE_PATH, databasePrefixPath);
         conf.set(SERVER_TIME_ZONE, serverTimezone);
-
+        conf.set(SOURCE_DB_TYPE,cdcSource);
         // parameters for mutil tables dml sink
         conf.set(LakeSoulSinkOptions.USE_CDC, true);
         conf.set(LakeSoulSinkOptions.WAREHOUSE_PATH, databasePrefixPath);
@@ -141,7 +141,7 @@ public class FlinkCdcEntry {
             DataStreamSink<JsonSourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
             DataStreamSink<JsonSourceRecord> ddlSink = builder.buildLakeSoulDDLSink(streams.f1);
 
-        } else if (cdcSource.equals("oracle_11g")) {
+        } else if (cdcSource.equals("oracle")) {
             OracleSourceBuild<JsonSourceRecord> sourceBuilder = OracleSourceBuild.<JsonSourceRecord>builder()
                     .hostname(host)
                     .port(port)

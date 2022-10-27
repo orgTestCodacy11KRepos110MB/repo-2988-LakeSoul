@@ -250,7 +250,11 @@ public class OracleDBManager extends ExternalDBManager {
                 column.type(columnMetadata.getString(6));
                 column.length(columnMetadata.getInt(7));
                 if (columnMetadata.getObject(9) != null) {
-                    column.scale(columnMetadata.getInt(9));
+                    int scale =columnMetadata.getInt(9);
+                    if(scale==-127){
+                        scale=0;
+                    }
+                    column.scale(scale);
                 }
 
                 column.optional(isNullable(columnMetadata.getInt(11)));
