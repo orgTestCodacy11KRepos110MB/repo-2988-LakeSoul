@@ -36,6 +36,8 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulDDLSinkOptions.SOURCE_DB_TYPE_NAME;
+
 public class LakeSoulDDLSink extends RichSinkFunction<JsonSourceRecord> {
     private static final String ddlField = "ddl";
     private static final String historyField = "historyRecord";
@@ -45,19 +47,22 @@ public class LakeSoulDDLSink extends RichSinkFunction<JsonSourceRecord> {
 
     @Override
     public void invoke(JsonSourceRecord value, Context context) throws Exception {
-        Struct val = (Struct) value.getValue(SourceRecordJsonSerde.getInstance()).value();
         ParameterTool pt = (ParameterTool) getRuntimeContext().getExecutionConfig().getGlobalJobParameters();
-        String sourceType = pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_TYPE.key());
         List<String> excludeTablesList = Arrays.asList(pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_EXCLUDE_TABLES.key(), LakeSoulDDLSinkOptions.SOURCE_DB_EXCLUDE_TABLES.defaultValue()).split(","));
         HashSet<String> excludeTables = new HashSet<>(excludeTablesList);
+        String cdcSourceType = pt.get(SOURCE_DB_TYPE_NAME.key(), SOURCE_DB_TYPE_NAME.defaultValue());
+        Struct val = (Struct) value.getValue(SourceRecordJsonSerde.getInstance()).value();
+
+        Struct sourceItem = (Struct) val.get(source);
+        String tablename = sourceItem.getString(table);
+
+        String ddlval = "";
         ExternalDBManager dbManager = null;
 
-        if ("mysql".equalsIgnoreCase(sourceType)) {
+        if (cdcSourceType.equals("mysql")) {
             String history = val.getString(historyField);
             JSONObject jso = (JSONObject) JSON.parse(history);
-            String ddlval = jso.getString(ddlField).toLowerCase();
-            Struct sourceItem = (Struct) val.get(source);
-            String tablename = sourceItem.getString(table);
+            ddlval = jso.getString(ddlField).toUpperCase();
             dbManager = new MysqlDBManager(pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_DB_NAME.key()),
                     pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_USER.key()),
                     pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_PASSWORD.key()),
@@ -68,32 +73,23 @@ public class LakeSoulDDLSink extends RichSinkFunction<JsonSourceRecord> {
                     pt.get(LakeSoulDDLSinkOptions.WAREHOUSE_PATH.key()),
                     pt.getInt(LakeSoulDDLSinkOptions.BUCKET_PARALLELISM.key()),
                     pt.getBoolean(LakeSoulDDLSinkOptions.USE_CDC.key()));
-            if (ddlval.contains("alter") || ddlval.contains("create")) {
-                dbManager.importOrSyncLakeSoulTable(tablename);
-            }
-        }
-
-        if ("oracle".equalsIgnoreCase(sourceType)) {
-            //String dbName = val.getStruct("source").getString("db");
-            String tableName = val.getStruct("source").getString("table");
-            //String schemaName = val.getStruct("source").getString("schema");
-            String ddlval = val.getString("ddl");
+        } else if (cdcSourceType.equals("oracle_11g")) {
+            ddlval = val.getString("ddl").toUpperCase();
             dbManager = new OracleDBManager(pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_DB_NAME.key()),
                     pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_USER.key()),
                     pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_PASSWORD.key()),
                     pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_HOST.key()),
                     Integer.toString(pt.getInt(LakeSoulDDLSinkOptions.SOURCE_DB_PORT.key(),
-                            MysqlDBManager.DEFAULT_MYSQL_PORT)),
+                            OracleDBManager.DEFAULT_ORACLE_PORT)),
                     excludeTables,
                     new HashSet<>(),
                     pt.get(LakeSoulDDLSinkOptions.WAREHOUSE_PATH.key()),
                     pt.getInt(LakeSoulDDLSinkOptions.BUCKET_PARALLELISM.key()),
                     pt.getBoolean(LakeSoulDDLSinkOptions.USE_CDC.key()));
-            if (ddlval.contains("alter") || ddlval.contains("create")) {
-                dbManager.importOrSyncLakeSoulTable(tableName);
-            }
         }
 
-
+        if (ddlval.contains("ALTER") || ddlval.contains("CREATE")) {
+            dbManager.importOrSyncLakeSoulTable(tablename);
+        }
     }
 }

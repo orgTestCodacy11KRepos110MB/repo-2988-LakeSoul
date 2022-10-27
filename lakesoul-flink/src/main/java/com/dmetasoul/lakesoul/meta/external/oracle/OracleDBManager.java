@@ -31,6 +31,8 @@ public class OracleDBManager extends ExternalDBManager {
     private final DBManager lakesoulDBManager = new DBManager();
     private final String lakesoulTablePathPrefix;
     private final String dbName;
+
+    private final String namespace;
     private final int hashBucketNum;
     private final boolean useCdc;
 
@@ -67,6 +69,9 @@ public class OracleDBManager extends ExternalDBManager {
         lakesoulTablePathPrefix = pathPrefix;
         this.hashBucketNum = hashBucketNum;
         this.useCdc = useCdc;
+
+        namespace = dbName + "." + user.toUpperCase();
+        importOrSyncLakeSoulNamespace(namespace);
     }
 
     public boolean checkOpenStatus() {
@@ -158,26 +163,24 @@ public class OracleDBManager extends ExternalDBManager {
     }
 
     public void importOrSyncLakeSoulTable(String tableName) {
-        System.out.println(tableName);
-        System.out.println(excludeTables);
         if (!includeTables.contains(tableName) && excludeTables.contains(tableName)) {
             System.out.println(String.format("Table %s is excluded by exclude table list", tableName));
             return;
         }
+//        System.out.println(showCreateTable(tableName));
 
         List<Column> columns = readSchema(tableName);
         List<String> priKeys = readPrimaryKeyNames(tableName);
         StructType schema = columnsToSparkSchema(columns);
-        System.out.println(priKeys);
 
         if (priKeys.isEmpty()) {
             throw new IllegalStateException(String.format("Table %s has no primary key, table with no Primary Keys is not supported", tableName));
         }
 
-        boolean exists = lakesoulDBManager.isTableExistsByTableName(tableName, dbName);
+        boolean exists = lakesoulDBManager.isTableExistsByTableName(tableName, namespace);
         if (exists) {
             // sync lakesoul table schema only
-            TableNameId tableId = lakesoulDBManager.shortTableName(tableName, dbName);
+            TableNameId tableId = lakesoulDBManager.shortTableName(tableName, namespace);
             String newTableSchema = schema.json();
 
             lakesoulDBManager.updateTableSchema(tableId.getTableId(), newTableSchema);
@@ -188,7 +191,7 @@ public class OracleDBManager extends ExternalDBManager {
 
                 String qualifiedPath =
                         FlinkUtil.makeQualifiedPath(new Path(new Path(
-                                lakesoulTablePathPrefix, dbName
+                                lakesoulTablePathPrefix, namespace
                         ), tableName)).toString();
 
                 String tableSchema = schema.json();
@@ -197,7 +200,7 @@ public class OracleDBManager extends ExternalDBManager {
                 json.put("hashBucketNum", String.valueOf(hashBucketNum));
                 json.put("lakesoul_cdc_change_column", "rowKinds");
 
-                lakesoulDBManager.createNewTable(tableId, dbName, tableName, qualifiedPath,
+                lakesoulDBManager.createNewTable(tableId, namespace, tableName, qualifiedPath,
                         tableSchema,
                         json, partitionsInTableInfo
                 );
@@ -250,10 +253,8 @@ public class OracleDBManager extends ExternalDBManager {
                 column.type(columnMetadata.getString(6));
                 column.length(columnMetadata.getInt(7));
                 if (columnMetadata.getObject(9) != null) {
-                    int scale =columnMetadata.getInt(9);
-                    if(scale==-127){
-                        scale=0;
-                    }
+                    int scale = columnMetadata.getInt(9);
+                    scale = scale == -127 ? 0:scale;
                     column.scale(scale);
                 }
 

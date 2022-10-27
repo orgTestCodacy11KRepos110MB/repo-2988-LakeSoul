@@ -47,7 +47,7 @@ public final class JsonSourceRecord implements Serializable {
         this.topic = topic;
         this.key = key;
         this.value = value;
-        this.tableId = new TableId(io.debezium.relational.TableId.parse(topic).toLowercase());
+        this.tableId = new TableId(io.debezium.relational.TableId.parse(topic).toLowercase()).toUppercase();
     }
 
     public static JsonSourceRecord fromKafkaSourceRecord(SourceRecord sourceRecord, SourceRecordJsonSerde serde) {

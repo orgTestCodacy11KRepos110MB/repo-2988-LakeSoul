@@ -28,6 +28,8 @@ import org.apache.flink.util.Preconditions;
 
 import java.util.Properties;
 
+import static io.debezium.connector.oracle.OracleConnectorConfig.TABLENAME_CASE_INSENSITIVE;
+
 public class OracleSourceBuild<T> {
     private static final String DATABASE_SERVER_NAME = "oracle_logminer";
     private int port = 1521;
@@ -108,6 +110,7 @@ public class OracleSourceBuild<T> {
         props.setProperty("database.port", String.valueOf(this.port));
         props.setProperty("database.history.skip.unparseable.ddl", String.valueOf(true));
         props.setProperty("database.dbname", (String) Preconditions.checkNotNull(this.database));
+        props.setProperty(TABLENAME_CASE_INSENSITIVE.name(), "false");
         if (this.schemaList != null) {
             props.setProperty("schema.whitelist", String.join(",", this.schemaList));
         }

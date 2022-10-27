@@ -67,6 +67,15 @@ public final class TableId implements Serializable {
     }
 
     /**
+     * Get the namespace of the lakesoul meta.
+     *
+     * @return the JDBC schema name, or null if the table does not belong to a JDBC schema
+     */
+    public String namespace() {
+        return catalog() + "." + schema();
+    }
+
+    /**
      * Get the name of the table.
      *
      * @return the table name; never null
@@ -197,5 +206,9 @@ public final class TableId implements Serializable {
 
     public TableId toLowercase() {
         return new TableId(catalogName, schemaName, tableName.toLowerCase());
+    }
+
+    public TableId toUppercase() {
+        return new TableId(catalogName, schemaName, tableName.toUpperCase());
     }
 }

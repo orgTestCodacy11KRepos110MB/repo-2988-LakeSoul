@@ -105,7 +105,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                 String partition = committable.getBucketId();
 
                 TableNameId tableNameId = lakeSoulDBManager.shortTableName(identity.tableId.table(),
-                                                                           identity.tableId.schema());
+                                                                           identity.tableId.namespace());
 
                 DataCommitInfo dataCommitInfo = new DataCommitInfo();
                 dataCommitInfo.setTableId(tableNameId.getTableId());

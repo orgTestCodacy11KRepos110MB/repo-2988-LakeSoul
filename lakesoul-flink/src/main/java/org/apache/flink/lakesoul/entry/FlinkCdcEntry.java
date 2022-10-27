@@ -1,5 +1,6 @@
 package org.apache.flink.lakesoul.entry;
 
+import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.external.ExternalDBManager;
 import com.dmetasoul.lakesoul.meta.external.mysql.MysqlDBManager;
 import com.dmetasoul.lakesoul.meta.external.oracle.OracleDBManager;
@@ -36,7 +37,7 @@ public class FlinkCdcEntry {
     public static void main(String[] args) throws Exception {
         ParameterTool parameter = ParameterTool.fromArgs(args);
 
-        String cdcSource = parameter.get(SOURCE_DB_TYPE_NAME.key(), SOURCE_DB_TYPE_NAME.defaultValue());
+        String cdcSourceType = parameter.get(SOURCE_DB_TYPE_NAME.key(), SOURCE_DB_TYPE_NAME.defaultValue());
         String dbName = parameter.get(SOURCE_DB_DB_NAME.key());
         String userName = parameter.get(SOURCE_DB_USER.key());
         String passWord = parameter.get(SOURCE_DB_PASSWORD.key());
@@ -51,9 +52,11 @@ public class FlinkCdcEntry {
 
         // import source database catalog info
         Configuration conf = new Configuration();
+        new DBManager().cleanMeta();
 
         ExternalDBManager dbManager = null;
-        if (cdcSource.equals("mysql")) {
+        if (cdcSourceType.equals("mysql")) {
+
             dbManager = new MysqlDBManager(dbName,
                     userName,
                     passWord,
@@ -63,13 +66,15 @@ public class FlinkCdcEntry {
                     databasePrefixPath,
                     bucketParallelism,
                     true);
-        } else if (cdcSource.equals("oracle")) {
+
+            dbManager.importOrSyncLakeSoulNamespace(dbName);
+        } else if (cdcSourceType.equals("oracle_11g")) {
             dbManager = new OracleDBManager(dbName,
                     userName,
                     passWord,
                     host,
                     Integer.toString(port),
-                    new HashSet<>(Arrays.asList("SYS_IOT_OVER_74800")),
+                    new HashSet<>(Arrays.asList("SYS_IOT_OVER_74800", "LOG_MINING_FLUSH")),
                     new HashSet<>(),
                     databasePrefixPath,
                     bucketParallelism,
@@ -77,7 +82,6 @@ public class FlinkCdcEntry {
         }
 
         assert dbManager != null;
-        dbManager.importOrSyncLakeSoulNamespace(dbName);
 
         List<String> tableList = dbManager.listTables();
         if (tableList.isEmpty()) {
@@ -86,6 +90,7 @@ public class FlinkCdcEntry {
         tableList.forEach(dbManager::importOrSyncLakeSoulTable);
 
         // parameters for mutil tables ddl sink
+        conf.set(SOURCE_DB_TYPE_NAME, cdcSourceType);
         conf.set(SOURCE_DB_DB_NAME, dbName);
         conf.set(SOURCE_DB_USER, userName);
         conf.set(SOURCE_DB_PASSWORD, passWord);
@@ -93,7 +98,7 @@ public class FlinkCdcEntry {
         conf.set(SOURCE_DB_PORT, port);
         conf.set(WAREHOUSE_PATH, databasePrefixPath);
         conf.set(SERVER_TIME_ZONE, serverTimezone);
-        conf.set(SOURCE_DB_TYPE,cdcSource);
+
         // parameters for mutil tables dml sink
         conf.set(LakeSoulSinkOptions.USE_CDC, true);
         conf.set(LakeSoulSinkOptions.WAREHOUSE_PATH, databasePrefixPath);
@@ -119,7 +124,7 @@ public class FlinkCdcEntry {
         conf.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
 
 
-        if (cdcSource.equals("mysql")) {
+        if (cdcSourceType.equals("mysql")) {
             MySqlSourceBuilder<JsonSourceRecord> sourceBuilder = MySqlSource.<JsonSourceRecord>builder()
                     .hostname(host)
                     .port(port)
@@ -141,12 +146,15 @@ public class FlinkCdcEntry {
             DataStreamSink<JsonSourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
             DataStreamSink<JsonSourceRecord> ddlSink = builder.buildLakeSoulDDLSink(streams.f1);
 
-        } else if (cdcSource.equals("oracle")) {
+        } else if (cdcSourceType.equals("oracle_11g")) {
+            String schemaName = userName.toUpperCase();
+            dbManager.importOrSyncLakeSoulNamespace(dbName + "." + schemaName);
             OracleSourceBuild<JsonSourceRecord> sourceBuilder = OracleSourceBuild.<JsonSourceRecord>builder()
                     .hostname(host)
                     .port(port)
                     .database(dbName) // set captured database
-                    .tableList("*") // set captured table
+                    .tableList(schemaName+".*") // set captured table
+                    .schemaList(schemaName)
 //                        .serverTimeZone(serverTimezone)  // default -- Asia/Shanghai
                     .username(userName)
                     .password(passWord);
