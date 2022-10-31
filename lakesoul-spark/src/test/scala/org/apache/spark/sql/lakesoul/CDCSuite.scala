@@ -150,4 +150,20 @@ class CDCSuite
       })
     }
   }
+
+  test("test oracle cdc") {
+
+    spark.read
+      .format("lakesoul")
+      .load("file:/Users/ceng/lakesoul/helowin.FLINKUSER/DBZ_NUMERIC_TYPES")
+      .show()
+    spark.read
+      .format("lakesoul")
+      .load("file:/Users/ceng/lakesoul/helowin.FLINKUSER/DBZ_CHAR_TYPES")
+      .show()
+    spark.read
+      .format("lakesoul")
+      .load("file:/Users/ceng/lakesoul/helowin.FLINKUSER/DBZ_BYTE_TYPES")
+      .show()
+  }
 }

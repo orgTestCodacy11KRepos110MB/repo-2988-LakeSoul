@@ -194,6 +194,7 @@ public class LakeSoulRecordConvert implements Serializable {
             case NanoTimestamp.SCHEMA_NAME:           //timestamp
                 return new TimestampType(9);
             case VariableScaleDecimal.LOGICAL_NAME:
+                return new DoubleType();
             case Decimal.LOGICAL_NAME:
                 Map<String,String> paras= ((ConnectSchema) fieldSchema).parameters();
                 if (paras == null) {
@@ -395,6 +396,7 @@ public class LakeSoulRecordConvert implements Serializable {
             case NanoTimestamp.SCHEMA_NAME:           //timestamp
                 return convertToTimeStamp(fieldValue, fieldSchema);
             case VariableScaleDecimal.LOGICAL_NAME:
+                return convertToVariableScaleDecimal(fieldValue, fieldSchema);
             case Decimal.LOGICAL_NAME:
                 return convertToDecimal(fieldValue, fieldSchema);
             case Date.SCHEMA_NAME:
@@ -412,6 +414,8 @@ public class LakeSoulRecordConvert implements Serializable {
                 return null;
         }
     }
+
+
 
     public Object convertToTime(Object dbzObj, Schema schema) {
         if (dbzObj instanceof Long) {
@@ -450,10 +454,20 @@ public class LakeSoulRecordConvert implements Serializable {
             }
         }
         Map<String,String> paras= ((ConnectSchema) schema).parameters();
-        if (paras == null) {
-            return DecimalData.fromBigDecimal(bigDecimal, 3, 2);
-        }
         return DecimalData.fromBigDecimal(bigDecimal, Integer.parseInt(paras.get("connect.decimal.precision")),Integer.parseInt(paras.get("scale")));
+    }
+
+    public Object convertToVariableScaleDecimal(Object dbzObj, Schema schema) {
+        BigDecimal bigDecimal;
+        assert VariableScaleDecimal.LOGICAL_NAME.equals(schema.name());
+        SpecialValueDecimal decimal =
+                VariableScaleDecimal.toLogical((Struct) dbzObj);
+        bigDecimal = decimal.getDecimalValue().get();
+
+//        if (paras == null) {
+//            return DecimalData.fromBigDecimal(bigDecimal, 38, 0);
+//        }
+        return bigDecimal.doubleValue();
     }
 
     public Object convertToDate(Object dbzObj, Schema schema) {
