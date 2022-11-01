@@ -37,6 +37,12 @@ class OracleDataTypeConverter extends JdbcDataTypeConverter {
                 return DoubleType;
             }
         }
+        if (matches("TIMESTAMP\\([0-9]+\\) WITH TIME ZONE", typeName)) {
+            return TimestampType;
+        }
+        if (matches("TIMESTAMP\\([0-9]+\\) WITH LOCAL TIME ZONE", typeName)) {
+            return TimestampType;
+        }
         return super.schemaBuilder(column);
     }
 }
