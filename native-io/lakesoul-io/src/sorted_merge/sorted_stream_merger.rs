@@ -4,8 +4,10 @@ use std::future::Ready;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::cmp::Reverse;
 
-use crate::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
+
+use crate::sorted_merge::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
 use arrow::error::ArrowError::DivideByZero;
 use arrow::row::{Row, Rows};
 use arrow::{error::Result as ArrowResult, record_batch::RecordBatch};
@@ -16,6 +18,8 @@ use datafusion::physical_expr::PhysicalSortExpr;
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
 use futures::stream::{Buffered, Map};
 use futures::{Stream, StreamExt};
+use futures::stream::{Fuse, FusedStream};
+
 use pin_project_lite::pin_project;
 use smallvec::SmallVec;
 
@@ -204,6 +208,12 @@ pub(crate) struct SortedStreamMerger<RangeCombiner> {
     waiting_ranges_to_merge: Vec<SmallVec<[SortKeyRange; 4]>>,
 
     range_combiner: RangeCombiner,
+
+
+    /// If the stream has encountered an error
+    aborted: bool,
+
+    stream_count: usize,
 }
 
 impl<RangeCombiner> SortedStreamMerger<RangeCombiner>
@@ -217,13 +227,10 @@ where
         batch_size: usize,
     ) -> Result<Self> {
         let stream_count = streams.len();
-        let mut wrappers: Vec<BufferedRecordBatchStream> = Vec::with_capacity(stream_count);
+        let mut wrappers: Vec<Fuse<SendableRecordBatchStream>> = Vec::with_capacity(stream_count);
         streams.into_iter().for_each(|s| {
-            let ready_futures = s
-                .stream
-                .map(std::future::ready as fn(ArrowResult<RecordBatch>) -> Ready<ArrowResult<RecordBatch>>);
-            let bufferred = ready_futures.buffered(2);
-            wrappers.push(bufferred);
+            let fused = s.stream.fuse();
+            wrappers.push(fused);
         });
 
         let range_fetchers = (0..stream_count)
@@ -237,6 +244,8 @@ where
             batch_size,
             waiting_ranges_to_merge: Vec::with_capacity(batch_size),
             range_combiner: RangeCombiner::with_fetchers(range_fetchers),
+            aborted: false,
+            stream_count: stream_count,
         })
     }
 
@@ -278,4 +287,50 @@ where
         // Ok(Box::pin(MergedStream::new(schema.clone(), stream)))
         Err(DivideByZero)
     }
+}
+
+impl<RangeCombiner> Stream for SortedStreamMerger<RangeCombiner> 
+where
+    RangeCombiner: StreamSortKeyRangeCombiner + Send + 'static,
+{
+    type Item = ArrowResult<RecordBatch>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        self.poll_next_inner(cx)
+    }
+}
+
+impl<RangeCombiner>  SortedStreamMerger<RangeCombiner> 
+where
+    RangeCombiner: StreamSortKeyRangeCombiner + Send + 'static,
+{    
+    #[inline]
+    fn poll_next_inner(
+        self: &mut Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<ArrowResult<RecordBatch>>> {
+        if self.aborted {
+            return Poll::Ready(None);
+        }
+
+        // Ensure all non-exhausted streams have a cursor from which
+        // rows can be pulled
+        for i in 0..self.stream_count {
+            todo!()
+        }
+
+        // NB timer records time taken on drop, so there are no
+        // calls to `timer.done()` below.
+        
+
+        loop {
+            match self.range_combiner {
+                _ => todo!(),
+            }
+        }
+    }
+    
 }

@@ -1,5 +1,5 @@
-use crate::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
-use crate::sorted_stream_merger::SortKeyRange;
+use crate::sorted_merge::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
+use crate::sorted_merge::sorted_stream_merger::SortKeyRange;
 use async_trait::async_trait;
 use dary_heap::DaryHeap;
 use datafusion::error::Result;
@@ -49,6 +49,10 @@ where
         }
     }
 
+    fn fetcher_num(self) -> usize {
+        self.fetchers.len()
+    } 
+
     async fn init(&mut self) -> Result<()> {
         let fetcher_iter_mut = self.fetchers.iter_mut();
         let futures = fetcher_iter_mut.map(|fetcher| async { fetcher.init_batch().await });
@@ -90,10 +94,10 @@ where
 #[cfg(test)]
 mod tests {
     use crate::lakesoul_reader::ArrowResult;
-    use crate::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
-    use crate::min_heap_combiner::MinHeapSortKeyRangeCombiner;
-    use crate::non_unique_fetcher::NonUniqueSortKeyRangeFetcher;
-    use crate::sorted_stream_merger::SortKeyRangeInBatch;
+    use crate::sorted_merge::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
+    use crate::sorted_merge::combiner::MinHeapSortKeyRangeCombiner;
+    use crate::sorted_merge::fetcher::NonUniqueSortKeyRangeFetcher;
+    use crate::sorted_merge::sorted_stream_merger::SortKeyRangeInBatch;
     use arrow::array::{ArrayRef, Int32Array};
     use arrow::record_batch::RecordBatch;
     use datafusion::error::Result;
@@ -125,10 +129,9 @@ mod tests {
         let batches = [batches];
         let exec = MemoryExec::try_new(&batches, schema.clone(), None).unwrap();
         let stream = exec.execute(0, context.clone()).unwrap();
-        let ready_futures =
-            stream.map(std::future::ready as fn(ArrowResult<RecordBatch>) -> Ready<ArrowResult<RecordBatch>>);
-        let bufferred = ready_futures.buffered(2);
-        NonUniqueSortKeyRangeFetcher::new(stream_idx, bufferred, &sort_exprs, schema)
+        let fused = stream.fuse();
+
+        NonUniqueSortKeyRangeFetcher::new(stream_idx, fused, &sort_exprs, schema)
     }
 
     fn create_batch_one_col_i32(name: &str, vec: &[i32]) -> RecordBatch {

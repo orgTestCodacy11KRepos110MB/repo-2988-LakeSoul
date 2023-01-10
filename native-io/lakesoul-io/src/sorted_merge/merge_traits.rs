@@ -1,9 +1,15 @@
-use crate::sorted_stream_merger::{BufferedRecordBatchStream, SortKeyRange};
+use crate::sorted_merge::sorted_stream_merger::SortKeyRange;
+
+use futures::stream::{Fuse, FusedStream};
+
+
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
+
 use datafusion::error::Result;
 use datafusion::physical_expr::PhysicalSortExpr;
+use datafusion::physical_plan::SendableRecordBatchStream;
 use smallvec::SmallVec;
 
 pub enum SortedFileType {
@@ -23,20 +29,12 @@ pub enum MergingLogicType {
     UseJavaMergeOp,
 }
 
-pub trait StreamSortKeyRangesMerger {
-    fn new(target_schema: SchemaRef, target_batch_size: usize, stream_schemas: Vec<SchemaRef>) -> Self;
-
-    fn merge(
-        &mut self,
-        ranges: SmallVec<[SortKeyRange; 4]>,
-    ) -> Result<Option<RecordBatch>>;
-}
 
 #[async_trait]
 pub trait StreamSortKeyRangeFetcher {
     fn new(
         stream_idx: usize,
-        stream: BufferedRecordBatchStream,
+        stream: Fuse<SendableRecordBatchStream>,
         expressions: &[PhysicalSortExpr],
         schema: SchemaRef,
     ) -> Result<Self>
@@ -58,6 +56,8 @@ pub trait StreamSortKeyRangeCombiner {
     type Fetcher: StreamSortKeyRangeFetcher;
 
     fn with_fetchers(fetchers: Vec<Self::Fetcher>) -> Self;
+
+    fn fetcher_num(self) -> usize;
 
     async fn init(&mut self) -> Result<()>;
 

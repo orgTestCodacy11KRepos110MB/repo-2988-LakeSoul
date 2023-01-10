@@ -1,6 +1,9 @@
 use crate::lakesoul_reader::ArrowResult;
-use crate::merge_traits::StreamSortKeyRangeFetcher;
-use crate::sorted_stream_merger::{BufferedRecordBatchStream, SortKeyRange, SortKeyRangeInBatch};
+use crate::sorted_merge::merge_traits::StreamSortKeyRangeFetcher;
+use crate::sorted_merge::sorted_stream_merger::{BufferedRecordBatchStream, SortKeyRange, SortKeyRangeInBatch};
+
+
+
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, Rows, SortField};
@@ -8,14 +11,16 @@ use async_trait::async_trait;
 use datafusion::error::DataFusionError::{ArrowError, Execution};
 use datafusion::error::Result;
 use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
+use datafusion::physical_plan::SendableRecordBatchStream;
+
 use futures::StreamExt;
-use futures_util::stream::{FilterMap, FusedStream, Peekable};
+use futures_util::stream::{Fuse, FilterMap, FusedStream, Peekable};
 use std::pin::Pin;
 use std::sync::Arc;
 
 pub type PeekableBatchRowsStream = Peekable<
     FilterMap<
-        BufferedRecordBatchStream,
+        Fuse<SendableRecordBatchStream>,
         std::future::Ready<Option<Result<(RecordBatch, Rows)>>>,
         Box<
             dyn FnMut(ArrowResult<RecordBatch>) -> std::future::Ready<Option<Result<(RecordBatch, Rows)>>>
@@ -50,7 +55,7 @@ impl NonUniqueSortKeyRangeFetcher {
 impl StreamSortKeyRangeFetcher for NonUniqueSortKeyRangeFetcher {
     fn new(
         stream_idx: usize,
-        stream: BufferedRecordBatchStream,
+        stream: Fuse<SendableRecordBatchStream>,
         expressions: &[PhysicalSortExpr],
         schema: SchemaRef,
     ) -> Result<Self> {
@@ -181,9 +186,9 @@ impl StreamSortKeyRangeFetcher for NonUniqueSortKeyRangeFetcher {
 #[cfg(test)]
 mod tests {
     use crate::lakesoul_reader::ArrowResult;
-    use crate::merge_traits::StreamSortKeyRangeFetcher;
-    use crate::non_unique_fetcher::NonUniqueSortKeyRangeFetcher;
-    use crate::sorted_stream_merger::SortKeyRangeInBatch;
+    use crate::sorted_merge::merge_traits::StreamSortKeyRangeFetcher;
+    use crate::sorted_merge::fetcher::NonUniqueSortKeyRangeFetcher;
+    use crate::sorted_merge::sorted_stream_merger::SortKeyRangeInBatch;
     use arrow::array::{ArrayRef, Int32Array};
     use arrow::record_batch::RecordBatch;
     use datafusion::error::Result;
@@ -214,10 +219,8 @@ mod tests {
         let batches = [batches];
         let exec = MemoryExec::try_new(&batches, schema.clone(), None).unwrap();
         let stream = exec.execute(0, context.clone()).unwrap();
-        let ready_futures =
-            stream.map(std::future::ready as fn(ArrowResult<RecordBatch>) -> Ready<ArrowResult<RecordBatch>>);
-        let bufferred = ready_futures.buffered(2);
-        NonUniqueSortKeyRangeFetcher::new(0, bufferred, &sort_exprs, schema)
+        let fused = stream.fuse();
+        NonUniqueSortKeyRangeFetcher::new(0, fused, &sort_exprs, schema)
     }
 
     fn create_batch_one_col_i32(name: &str, vec: &[i32]) -> RecordBatch {
