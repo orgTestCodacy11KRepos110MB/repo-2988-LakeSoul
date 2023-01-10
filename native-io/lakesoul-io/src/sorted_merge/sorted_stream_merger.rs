@@ -316,21 +316,30 @@ where
             return Poll::Ready(None);
         }
 
-        // Ensure all non-exhausted streams have a cursor from which
+        // Ensure all non-exhausted fetchers have a cursor from which
         // rows can be pulled
         for i in 0..self.stream_count {
             todo!()
         }
 
-        // NB timer records time taken on drop, so there are no
-        // calls to `timer.done()` below.
         
-
+        // refer by https://docs.rs/datafusion/13.0.0/src/datafusion/physical_plan/sorts/sort_preserving_merge.rs.html#567-608
         loop {
             match self.range_combiner {
                 _ => todo!(),
             }
         }
     }
+
+        /// Drains the in_progress SortKeyRangeInBatch, and builds a new RecordBatch from them
+    ///
+    /// Will then drop any batches for which all rows have been yielded to the output
+    fn build_record_batch(&mut self) -> ArrowResult<RecordBatch> {
+        // Mapping from stream index to the index of the first buffer from that stream
+
+        // Merge all SortKeyRangeInBatch with specific MergeOp(RangeCombiner)
+        todo!()
+    }
+
     
 }
