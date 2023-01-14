@@ -1,6 +1,9 @@
+use std::fmt::Debug;
+use std::sync::Arc;
+
 use crate::sorted_merge::sorted_stream_merger::SortKeyRange;
 
-use futures::stream::{Fuse, FusedStream};
+use futures::stream::{Fuse, FusedStream, Stream};
 
 
 use arrow::datatypes::SchemaRef;
@@ -31,7 +34,7 @@ pub enum MergingLogicType {
 
 
 #[async_trait]
-pub trait StreamSortKeyRangeFetcher {
+pub trait StreamSortKeyRangeFetcher:Debug + Stream {
     fn new(
         stream_idx: usize,
         stream: Fuse<SendableRecordBatchStream>,
@@ -59,7 +62,9 @@ pub trait StreamSortKeyRangeCombiner {
 
     fn fetcher_num(self) -> usize;
 
+    fn push(&mut self, range: SortKeyRange);
+
     async fn init(&mut self) -> Result<()>;
 
-    async fn next(&mut self) -> Result<Option<SmallVec<[SortKeyRange; 4]>>>;
+    async fn next(&mut self) -> Result<Option<SmallVec<[Box<SortKeyRange>; 4]>>>;
 }
