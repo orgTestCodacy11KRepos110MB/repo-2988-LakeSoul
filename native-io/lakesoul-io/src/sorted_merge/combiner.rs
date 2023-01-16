@@ -1,12 +1,36 @@
 use crate::sorted_merge::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
+use crate::sorted_merge::fetcher::NonUniqueSortKeyRangeFetcher;
 use crate::sorted_merge::sorted_stream_merger::SortKeyRange;
 use async_trait::async_trait;
 use dary_heap::DaryHeap;
 use datafusion::error::Result;
 use futures::future::try_join_all;
 use smallvec::SmallVec;
-use std::cmp::Reverse;
 
+use std::fmt::{Debug, Formatter};
+use std::cmp::Reverse;
+use std::sync::Arc;
+use std::ops::Deref;
+use std::borrow::Borrow;
+
+#[derive(Debug)]
+pub enum RangeCombiner {
+    MinHeapSortKeyRangeCombiner(MinHeapSortKeyRangeCombiner::<NonUniqueSortKeyRangeFetcher, 2>)
+}
+
+impl RangeCombiner {
+    pub fn new() -> Self {
+        RangeCombiner::MinHeapSortKeyRangeCombiner(MinHeapSortKeyRangeCombiner::<NonUniqueSortKeyRangeFetcher, 2>::with_fetchers(vec![]))
+    }
+
+    pub fn push(&mut self, range: SortKeyRange) {
+        match self {
+            RangeCombiner::MinHeapSortKeyRangeCombiner(combiner) => combiner.push(range)
+        };
+    }
+}
+
+#[derive(Debug)]
 pub struct MinHeapSortKeyRangeCombiner<Fetcher: StreamSortKeyRangeFetcher + Send, const D: usize> {
     fetchers: Vec<Fetcher>,
     heap: DaryHeap<Reverse<SortKeyRange>, D>,
@@ -64,19 +88,19 @@ where
         Ok(())
     }
 
-    async fn next(&mut self) -> Result<Option<SmallVec<[SortKeyRange; 4]>>> {
-        let mut ranges: SmallVec<[SortKeyRange; 4]> = SmallVec::<[SortKeyRange; 4]>::new();
+    async fn next(&mut self) -> Result<Option<SmallVec<[Box<SortKeyRange>; 4]>>> {
+        let mut ranges: SmallVec<[Box<SortKeyRange>; 4]> = SmallVec::<[Box<SortKeyRange>; 4]>::new();
         let sort_key_range = self.heap.pop();
         if sort_key_range.is_some() {
-            let range = sort_key_range.unwrap().0;
-            self.fetch_next_range(range.stream_idx, Some(&range)).await?;
+            let range = Box::new(sort_key_range.unwrap().0);
+            self.fetch_next_range(range.stream_idx, Some(range.borrow())).await?;
             ranges.push(range);
             loop {
                 // check if next range (maybe in another stream) has same row key
                 let next_range = self.heap.peek();
-                if next_range.is_some_and(|nr| nr.0 == *ranges.last().unwrap()) {
-                    let range_next = self.heap.pop().unwrap().0;
-                    self.fetch_next_range(range_next.stream_idx, Some(&range_next)).await?;
+                if next_range.is_some_and(|nr| nr.0 == **ranges.last().unwrap()) {
+                    let range_next = Box::new(self.heap.pop().unwrap().0);
+                    self.fetch_next_range(range_next.stream_idx, Some(range_next.borrow())).await?;
                     ranges.push(range_next);
                 } else {
                     break;
@@ -88,6 +112,10 @@ where
         } else {
             Ok(Some(ranges))
         }
+    }
+
+    fn push(&mut self, sort_key_range: SortKeyRange) {
+        self.heap.push(Reverse(sort_key_range));
     }
 }
 

@@ -13,10 +13,60 @@ use datafusion::error::Result;
 use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
 use datafusion::physical_plan::SendableRecordBatchStream;
 
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use futures_util::stream::{Fuse, FilterMap, FusedStream, Peekable};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::fmt::{Debug, Formatter};
+use std::task::{Context, Poll};
+
+
+
+#[derive(Debug)]
+pub enum RangeFetcher {
+    NonUniqueSortKeyRangeFetcher(NonUniqueSortKeyRangeFetcher),
+}
+
+impl Stream for RangeFetcher { 
+    type Item = ArrowResult<SortKeyRange>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        let this = &mut *self;
+        match this {
+            RangeFetcher::NonUniqueSortKeyRangeFetcher(fetcher) => fetcher.poll_next_unpin(cx)
+        }
+    }
+}
+
+
+// #[async_trait]
+impl  RangeFetcher {
+    pub fn new(
+        stream_idx: usize,
+        stream: Fuse<SendableRecordBatchStream>,
+        expressions: &[PhysicalSortExpr],
+        schema: SchemaRef,
+    ) -> Result<Self> {
+        Ok(RangeFetcher::NonUniqueSortKeyRangeFetcher(NonUniqueSortKeyRangeFetcher::new(stream_idx, stream, expressions, schema.clone()).unwrap()))
+    }
+
+    // async fn init_batch(&mut self) -> Result<()> {
+    //     match self {
+    //         RangeFetcher::NonUniqueSortKeyRangeFetcher(fetcher) => fetcher.init_batch()
+    //     };
+    //     Ok(())
+    // }
+
+    pub fn is_terminated(&self) -> bool {
+        match self {
+            RangeFetcher::NonUniqueSortKeyRangeFetcher(fetcher) => fetcher.is_terminated()
+        }
+    }
+
+}
 
 pub type PeekableBatchRowsStream = Peekable<
     FilterMap<
@@ -33,6 +83,28 @@ pub type PeekableBatchRowsStream = Peekable<
 pub struct NonUniqueSortKeyRangeFetcher {
     stream_idx: usize,
     stream: PeekableBatchRowsStream,
+    current_range: Option<SortKeyRange>,
+}
+
+impl Debug for NonUniqueSortKeyRangeFetcher {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "NonUniqueSortKeyRangeFetcher")
+    }
+}
+
+impl Stream for NonUniqueSortKeyRangeFetcher { 
+    type Item = ArrowResult<SortKeyRange>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        if self.is_terminated() {
+            return Poll::Ready(None);
+        }
+        
+        todo!()
+    }
 }
 
 impl NonUniqueSortKeyRangeFetcher {
@@ -95,7 +167,7 @@ impl StreamSortKeyRangeFetcher for NonUniqueSortKeyRangeFetcher {
             Err(e) => std::future::ready(Some(Err(ArrowError(e)))),
         });
         let stream = stream.filter_map(map_fn).peekable();
-        Ok(NonUniqueSortKeyRangeFetcher { stream_idx, stream })
+        Ok(NonUniqueSortKeyRangeFetcher { stream_idx, stream, current_range: None })
     }
 
     async fn init_batch(&mut self) -> Result<()> {
