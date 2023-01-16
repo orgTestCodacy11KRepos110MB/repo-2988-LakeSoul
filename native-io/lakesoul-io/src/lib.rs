@@ -15,9 +15,11 @@
  */
 #![feature(new_uninit)]
 #![feature(get_mut_unchecked)]
-#![feature(is_some_with)]
+#![feature(is_some_and)]
 #![feature(async_closure)]
 #![feature(let_chains)]
+
+extern crate core;
 
 pub mod lakesoul_reader;
 pub mod filter;
