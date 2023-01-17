@@ -122,12 +122,15 @@ where
 #[cfg(test)]
 mod tests {
     use crate::lakesoul_reader::ArrowResult;
+    use crate::sorted_merge::record_batch_builder::MergedArrayData;
     use crate::sorted_merge::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
     use crate::sorted_merge::combiner::MinHeapSortKeyRangeCombiner;
     use crate::sorted_merge::fetcher::NonUniqueSortKeyRangeFetcher;
-    use crate::sorted_merge::sorted_stream_merger::SortKeyRangeInBatch;
+    use crate::sorted_merge::sorted_stream_merger::{SortKeyRangeInBatch, SortKeyRange};
     use arrow::array::{ArrayRef, Int32Array};
+    use arrow::array::{make_array as make_arrow_array};
     use arrow::record_batch::RecordBatch;
+    use arrow_schema::{DataType, Field, Schema};
     use datafusion::error::Result;
     use datafusion::execution::context::TaskContext;
     use datafusion::from_slice::FromSlice;
@@ -139,6 +142,7 @@ mod tests {
     use futures_util::StreamExt;
     use std::future::Ready;
     use std::sync::Arc;
+    use smallvec::SmallVec;
 
     async fn create_stream_fetcher(
         stream_idx: usize,
@@ -303,5 +307,108 @@ mod tests {
         // end
         let ranges = combiner.next().await.unwrap();
         assert!(ranges.is_none());
+    }
+
+    /**
+    In product environment, we can use this function definition
+    fn merge_multi_sort_key_ranges(merged_array_data: Vec<&mut MergedArrayData>, result_schema: SchemaRef, sort_key_ranges: SmallVec::<[Box<SortKeyRange>; 4]>,
+            merge_operator: Vec<merge_op>) {
+        for i in 0..col_nums {
+            merge_one_column(merged_array_data[i], result_schema.fields[i].data_type(), sort_key_ranges)
+        }
+    }
+    */
+    fn merge_multi_sort_key_ranges(merged_array_data: &mut MergedArrayData, sort_key_ranges: SmallVec::<[Box<SortKeyRange>; 4]>) {
+        let mut result = 0i32;
+        for i in 0..sort_key_ranges.len() {
+            let last_range_in_batch = sort_key_ranges[i].sort_key_ranges.last().unwrap();
+            let arr = last_range_in_batch.batch.column(0).as_any()
+                    .downcast_ref::<Int32Array>()
+                    .expect("Failed to downcast");
+            let p = arr.value(last_range_in_batch.end_row);
+            result += p;
+        }
+        merged_array_data.push_non_null_item(result);
+    }
+
+    #[tokio::test]
+    async fn test_multi_streams_combine_and_merge() {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+        let rb1 = create_batch_one_col_i32("id", &[1, 1, 3, 3, 4]);
+        let rb2 = create_batch_one_col_i32("id", &[1, 1, 1, 2, 3, 3, 4]);
+        let rb3 = create_batch_one_col_i32("id", &[0, 1, 2, 3, 3, 4, 4, 5]);
+        let s1fetcher = create_stream_fetcher(
+            0,
+            vec![rb1.clone()],
+            task_ctx.clone(),
+            vec!["id"],
+        )
+        .await
+        .unwrap();
+        let s2fetcher = create_stream_fetcher(
+            1,
+            vec![rb2.clone()],
+            task_ctx.clone(),
+            vec!["id"],
+        )
+        .await
+        .unwrap();
+        let s3fetcher = create_stream_fetcher(
+            2,
+            vec![
+                rb3.clone()
+            ],
+            task_ctx.clone(),
+            vec!["id"],
+        )
+        .await
+        .unwrap();
+
+        let mut combiner = MinHeapSortKeyRangeCombiner::<NonUniqueSortKeyRangeFetcher, 2>::with_fetchers(vec![
+            s1fetcher, s2fetcher, s3fetcher,
+        ]);
+        combiner.init().await.unwrap();
+
+        let field = Field::new("id", DataType::Int32, false);
+        let mut array_data = MergedArrayData::new(&field, 6);
+
+
+        let id_array: Int32Array = Int32Array::from(vec![0, 3, 4, 9, 12, 5]);
+        let result_schema = Schema::new(vec![
+            Field::new("id", DataType::Int32, false)
+        ]);
+        let result_batch = RecordBatch::try_new(
+            Arc::new(result_schema),
+            vec![Arc::new(id_array)]
+        ).unwrap();
+
+        // [0] from s3
+        let ranges = combiner.next().await.unwrap().unwrap();
+        merge_multi_sort_key_ranges(&mut array_data, ranges);
+        // [1, 1] from s1, [1, 1, 1] from s2, [1, 1] from s3
+        let ranges = combiner.next().await.unwrap().unwrap();
+        merge_multi_sort_key_ranges(&mut array_data, ranges);
+        // [2] from s2, [2] from s3
+        let ranges = combiner.next().await.unwrap().unwrap();
+        merge_multi_sort_key_ranges(&mut array_data, ranges);
+        // [3, 3] from s1, [3, 3] from s2, [3, 3] from s3
+        let ranges = combiner.next().await.unwrap().unwrap();
+        merge_multi_sort_key_ranges(&mut array_data, ranges);
+        // [4] from s1, [4] from s2, [4, 4] from s3
+        let ranges = combiner.next().await.unwrap().unwrap();
+        merge_multi_sort_key_ranges(&mut array_data, ranges);
+        // [5] from s3
+        let ranges = combiner.next().await.unwrap().unwrap();
+        merge_multi_sort_key_ranges(&mut array_data, ranges);
+        // end
+        let ranges = combiner.next().await.unwrap();
+        assert!(ranges.is_none());
+
+        let ad = array_data.freeze(None);
+        let column = make_arrow_array(ad);
+        let schema = Schema::new(vec![field]);
+        let rb = RecordBatch::try_new(std::sync::Arc::new(schema), vec![column]).unwrap();
+        assert_eq!(rb, result_batch);
     }
 }
