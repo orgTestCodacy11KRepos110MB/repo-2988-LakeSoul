@@ -318,7 +318,7 @@ mod tests {
         }
     }
     */
-    fn merge_multi_sort_key_ranges(merged_array_data: &mut MergedArrayData, sort_key_ranges: SmallVec::<[Box<SortKeyRange>; 4]>) {
+    fn merge_one_column(merged_array_data: &mut MergedArrayData, dt: &DataType, sort_key_ranges: SmallVec::<[Box<SortKeyRange>; 4]>) {
         let mut result = 0i32;
         for i in 0..sort_key_ranges.len() {
             let last_range_in_batch = sort_key_ranges[i].sort_key_ranges.last().unwrap();
@@ -382,25 +382,26 @@ mod tests {
             Arc::new(result_schema),
             vec![Arc::new(id_array)]
         ).unwrap();
+        let dt = DataType::Int32;
 
         // [0] from s3
         let ranges = combiner.next().await.unwrap().unwrap();
-        merge_multi_sort_key_ranges(&mut array_data, ranges);
+        merge_one_column(&mut array_data, &dt,ranges);
         // [1, 1] from s1, [1, 1, 1] from s2, [1, 1] from s3
         let ranges = combiner.next().await.unwrap().unwrap();
-        merge_multi_sort_key_ranges(&mut array_data, ranges);
+        merge_one_column(&mut array_data, &dt,ranges);
         // [2] from s2, [2] from s3
         let ranges = combiner.next().await.unwrap().unwrap();
-        merge_multi_sort_key_ranges(&mut array_data, ranges);
+        merge_one_column(&mut array_data, &dt,ranges);
         // [3, 3] from s1, [3, 3] from s2, [3, 3] from s3
         let ranges = combiner.next().await.unwrap().unwrap();
-        merge_multi_sort_key_ranges(&mut array_data, ranges);
+        merge_one_column(&mut array_data, &dt,ranges);
         // [4] from s1, [4] from s2, [4, 4] from s3
         let ranges = combiner.next().await.unwrap().unwrap();
-        merge_multi_sort_key_ranges(&mut array_data, ranges);
+        merge_one_column(&mut array_data, &dt,ranges);
         // [5] from s3
         let ranges = combiner.next().await.unwrap().unwrap();
-        merge_multi_sort_key_ranges(&mut array_data, ranges);
+        merge_one_column(&mut array_data, &dt,ranges);
         // end
         let ranges = combiner.next().await.unwrap();
         assert!(ranges.is_none());
