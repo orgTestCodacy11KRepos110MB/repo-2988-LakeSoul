@@ -157,7 +157,7 @@ pub(crate) fn new_buffers(data_type: &DataType, capacity: usize) -> [MutableBuff
             empty_buffer,
         ],
         DataType::Float16 => [
-            MutableBuffer::new(capacity * mem::size_of::<f16>()),
+            MutableBuffer::new(capacity * mem::size_of::<f32>()),
             empty_buffer,
         ],
         DataType::Float32 => [

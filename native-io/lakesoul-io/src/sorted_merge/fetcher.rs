@@ -1,7 +1,7 @@
 use crate::lakesoul_reader::ArrowResult;
 use crate::sorted_merge::merge_traits::StreamSortKeyRangeFetcher;
-use crate::sorted_merge::sorted_stream_merger::{BufferedRecordBatchStream, SortKeyRange, SortKeyRangeInBatch};
-
+use crate::sorted_merge::sorted_stream_merger::{BufferedRecordBatchStream, SortKeyRange};
+use crate::sorted_merge::sort_key_range::SortKeyRangeInBatch;
 
 
 use arrow::datatypes::SchemaRef;
@@ -28,7 +28,7 @@ pub enum RangeFetcher {
 }
 
 impl Stream for RangeFetcher { 
-    type Item = ArrowResult<SortKeyRange>;
+    type Item = ArrowResult<SortKeyRangeInBatch>;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
@@ -93,17 +93,13 @@ impl Debug for NonUniqueSortKeyRangeFetcher {
 }
 
 impl Stream for NonUniqueSortKeyRangeFetcher { 
-    type Item = ArrowResult<SortKeyRange>;
+    type Item = ArrowResult<SortKeyRangeInBatch>;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        if self.is_terminated() {
-            return Poll::Ready(None);
-        }
-        
-        todo!()
+        Poll::Pending
     }
 }
 
@@ -215,7 +211,7 @@ impl StreamSortKeyRangeFetcher for NonUniqueSortKeyRangeFetcher {
                     }
                 }
                 // construct a sort key in batch
-                let sort_key_in_batch = SortKeyRangeInBatch::new(begin, i, batch.clone(), rows.clone());
+                let sort_key_in_batch = SortKeyRangeInBatch::new(begin, i, 0, batch.clone(), rows.clone());
                 sort_key_range.sort_key_ranges.push(sort_key_in_batch);
                 i = i + 1;
                 break; // while

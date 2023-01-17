@@ -1,34 +1,101 @@
 use crate::sorted_merge::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
 use crate::sorted_merge::fetcher::NonUniqueSortKeyRangeFetcher;
 use crate::sorted_merge::sorted_stream_merger::SortKeyRange;
+use crate::sorted_merge::sort_key_range::SortKeyRangeInBatch;
 use async_trait::async_trait;
 use dary_heap::DaryHeap;
 use datafusion::error::Result;
 use futures::future::try_join_all;
 use smallvec::SmallVec;
 
+use arrow::{error::Result as ArrowResult, error::ArrowError,  record_batch::RecordBatch};
+
 use std::fmt::{Debug, Formatter};
 use std::cmp::Reverse;
 use std::sync::Arc;
 use std::ops::Deref;
 use std::borrow::Borrow;
+use std::collections::BinaryHeap;
+use std::pin::Pin;
+
 
 #[derive(Debug)]
 pub enum RangeCombiner {
-    MinHeapSortKeyRangeCombiner(MinHeapSortKeyRangeCombiner::<NonUniqueSortKeyRangeFetcher, 2>)
+    MinHeapSortKeyRangeCombiner(MinHeapSortKeyRangeCombiner::<NonUniqueSortKeyRangeFetcher, 2>),
+    MinHeapSortKeyRangeInBatchCombiner(MinHeapSortKeyRangeInBatchCombiner),
 }
 
 impl RangeCombiner {
-    pub fn new() -> Self {
-        RangeCombiner::MinHeapSortKeyRangeCombiner(MinHeapSortKeyRangeCombiner::<NonUniqueSortKeyRangeFetcher, 2>::with_fetchers(vec![]))
+    pub fn new(streams_num:usize, target_batch_size: usize) -> Self {
+        RangeCombiner::MinHeapSortKeyRangeInBatchCombiner(MinHeapSortKeyRangeInBatchCombiner::new(streams_num, target_batch_size))
     }
 
-    pub fn push(&mut self, range: SortKeyRange) {
+    pub fn push_range(&mut self, range: Reverse<SortKeyRangeInBatch>) {
         match self {
-            RangeCombiner::MinHeapSortKeyRangeCombiner(combiner) => combiner.push(range)
+            RangeCombiner::MinHeapSortKeyRangeCombiner(combiner) => todo!("combiner.push(range)"),
+            RangeCombiner::MinHeapSortKeyRangeInBatchCombiner(combiner) => combiner.push(range)
         };
     }
+
+    pub fn poll_result(&mut self) -> RangeCombinerResult {
+        match self {
+            RangeCombiner::MinHeapSortKeyRangeCombiner(combiner) => todo!("combiner.push(range)"),
+            RangeCombiner::MinHeapSortKeyRangeInBatchCombiner(combiner) => combiner.poll_result()
+        }
+    }
 }
+
+#[derive(Debug)]
+pub enum RangeCombinerResult {
+    Err(ArrowError),
+    Range(Reverse<SortKeyRangeInBatch>),
+    RecordBatch(ArrowResult<RecordBatch>),
+}
+
+#[derive(Debug)]
+pub struct MinHeapSortKeyRangeInBatchCombiner{
+    heap: BinaryHeap<Reverse<SortKeyRangeInBatch>>,
+    in_progress: Vec<SortKeyRange>,
+    target_batch_size: usize,
+    current_sort_key_range: SortKeyRange
+}
+
+impl MinHeapSortKeyRangeInBatchCombiner{
+    pub fn new(streams_num: usize, target_batch_size: usize) -> Self {
+        MinHeapSortKeyRangeInBatchCombiner{
+            heap: BinaryHeap::with_capacity(streams_num),
+            in_progress: vec![],
+            target_batch_size: target_batch_size,
+            current_sort_key_range: SortKeyRange::new(streams_num)
+        }
+    }
+
+    pub fn push(&mut self, range: Reverse<SortKeyRangeInBatch>) {
+        self.heap.push(range)
+    }
+
+    pub fn poll_result(&mut self) -> RangeCombinerResult  {
+        if self.in_progress.len() == self.target_batch_size {
+            RangeCombinerResult::RecordBatch(self.build_record_batch())
+        } else {
+            match self.heap.pop() {
+                Some(Reverse(range)) => {
+                    if self.current_sort_key_range.current() == range.current() {
+                        self.current_sort_key_range.add_range_in_batch(range.clone());
+                    };
+                    RangeCombinerResult::Range(Reverse(range)) 
+                }
+                None if self.in_progress.is_empty() => RangeCombinerResult::Err(ArrowError::DivideByZero),
+                None => RangeCombinerResult::RecordBatch(self.build_record_batch())
+            }
+        }
+    }
+ 
+    fn build_record_batch(&mut self) -> ArrowResult<RecordBatch> {
+        todo!()
+    }
+}
+
 
 #[derive(Debug)]
 pub struct MinHeapSortKeyRangeCombiner<Fetcher: StreamSortKeyRangeFetcher + Send, const D: usize> {
