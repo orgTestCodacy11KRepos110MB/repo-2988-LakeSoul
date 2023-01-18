@@ -6,3 +6,4 @@ pub mod combiner;
 pub mod sort_key_range;
 mod record_batch_builder;
 mod utils;
+mod merge_operator;

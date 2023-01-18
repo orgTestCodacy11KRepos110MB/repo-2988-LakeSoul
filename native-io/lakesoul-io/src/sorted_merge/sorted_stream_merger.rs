@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 use crate::sorted_merge::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
 use crate::sorted_merge::combiner::{RangeCombiner, RangeCombinerResult};
 use crate::sorted_merge::fetcher::{RangeFetcher, NonUniqueSortKeyRangeFetcher};
-use crate::sorted_merge::sort_key_range::SortKeyRangeInBatch;
+use crate::sorted_merge::sort_key_range::SortKeyBatchRange;
 
 use arrow::error::ArrowError;
 use arrow::error::ArrowError::DivideByZero;
@@ -35,7 +35,7 @@ use smallvec::SmallVec;
 // This is the unit to be sorted in min heap
 pub struct SortKeyRange {
     // use small vector to avoid allocation on every row
-    pub(crate) sort_key_ranges: SmallVec<[SortKeyRangeInBatch; 2]>,
+    pub(crate) sort_key_ranges: SmallVec<[SortKeyBatchRange; 2]>,
 
     pub(crate) stream_idx: usize,
 }
@@ -61,7 +61,7 @@ impl SortKeyRange {
         new_range
     }
 
-    pub fn add_range_in_batch(&mut self, range: SortKeyRangeInBatch) {
+    pub fn add_range_in_batch(&mut self, range: SortKeyBatchRange) {
         self.sort_key_ranges.push(range)
     }
 
@@ -99,15 +99,6 @@ impl Ord for SortKeyRange {
     }
 }
 
-impl Debug for SortKeyRangeInBatch {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        f.debug_struct("SortKeyRangeInBatch")
-            .field("begin_row", &self.begin_row)
-            .field("end_row", &self.end_row)
-            .field("batch", &self.batch)
-            .finish()
-    }
-}
 
 impl Debug for SortKeyRange {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
@@ -241,7 +232,7 @@ pub(crate) struct SortedStreamMerger
     next_batch_id: usize,
 
     /// Vector that holds all [`SortKeyCursor`]s
-    ranges: Vec<Option<SortKeyRangeInBatch>>,
+    ranges: Vec<Option<SortKeyBatchRange>>,
 
     /// row converter
     row_converter: RowConverter,
@@ -279,6 +270,8 @@ impl SortedStreamMerger
         //     .map(|(stream_idx, stream)| RangeFetcher::new(stream_idx, stream, expressions, schema.clone()))
         //     .collect::<Result<Vec<_>>>()?;
 
+        let combiner = RangeCombiner::new(schema.clone(), streams_num, batch_size);
+
         Ok(Self {
             schema,
             batches,
@@ -290,7 +283,7 @@ impl SortedStreamMerger
             // in_progress: vec![],
             next_batch_id: 0,
             ranges: (0..streams_num).into_iter().map(|_| None).collect(),
-            range_combiner: RangeCombiner::new(streams_num, batch_size),
+            range_combiner: combiner,
             batch_size,
             row_converter,
         })
@@ -383,7 +376,7 @@ impl SortedStreamMerger
                         self.batches[idx].push_back(batch.clone());
                         
                         let (batch, rows) = (Arc::new(batch), Arc::new(rows));
-                        let range = SortKeyRangeInBatch::new(0, 0, idx, batch.clone(), rows.clone()).advance();
+                        let range = SortKeyBatchRange::new(0, 0, idx, batch.clone(), rows.clone()).advance();
 
                         self.window_finished[idx] = false;
 
@@ -435,7 +428,7 @@ impl SortedStreamMerger
                 RangeCombinerResult::Err(e) => return Poll::Ready(Some(Err(e))),
                 RangeCombinerResult::Range(Reverse(mut range)) => {
                     let stream_idx = range.stream_idx();
-                    let batcch = Arc::new(self.batches[stream_idx].back().unwrap());
+                    let batch = Arc::new(self.batches[stream_idx].back().unwrap());
                     let current_range = range.advance();
 
                     let mut window_finished = false;

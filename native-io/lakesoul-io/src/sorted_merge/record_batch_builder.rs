@@ -118,7 +118,7 @@ impl MergedArrayData {
         // self.len += 1;
     }
 
-    pub(crate) fn freeze(self, dictionary: Option<ArrayData>) -> ArrayData {
+    pub(crate) fn freeze(self) -> ArrayData {
         let buffers = into_buffers(&self.data_type, self.buffer1, self.buffer2);
 
         // let child_data = match self.data_type {
@@ -350,32 +350,24 @@ mod tests {
     }
 
     fn fill_value_for_primitive(array_data: &mut MergedArrayData, dt: &DataType, item: i32) {
-        if *dt == DataType::UInt8 {
-            array_data.push_non_null_item(item as u8);
-        } else if *dt == DataType::UInt16 {
-            array_data.push_non_null_item(item as u16);
-        } else if *dt == DataType::UInt32 {
-            array_data.push_non_null_item(item as u32);
-        } else if *dt == DataType::UInt64 {
-            array_data.push_non_null_item(item as u64);
-        } else if *dt == DataType::Int8 {
-            array_data.push_non_null_item(item as i8);
-        } else if *dt == DataType::Int16 {
-            array_data.push_non_null_item(item as i16);
-        } else if *dt == DataType::Int32 {
-            array_data.push_non_null_item(item as i32);
-        } else if *dt == DataType::Int64 {
-            array_data.push_non_null_item(item as i64);
-        } else {
-            panic!("Unsupported DataType: {}", dt)
+        match *dt {
+            DataType::UInt8 => array_data.push_non_null_item(item as u8),
+            DataType::UInt16 => array_data.push_non_null_item(item as u16),
+            DataType::UInt32 => array_data.push_non_null_item(item as u32),
+            DataType::UInt64 => array_data.push_non_null_item(item as u64),
+            DataType::Int8 => array_data.push_non_null_item(item as i8),
+            DataType::Int16 => array_data.push_non_null_item(item as i16),
+            DataType::Int32 => array_data.push_non_null_item(item as i32),
+            DataType::Int64 => array_data.push_non_null_item(item as i64),
+            _ => panic!("Unsupported DataType: {}", dt)
         }
-    }
+    } 
 
     fn _test_primitive_push(field_name: &str, dt: DataType, nullable: bool) {
         let field = Field::new(field_name, dt.clone(), nullable);
         let mut array_data = MergedArrayData::new(&field, 5);
         println!("[debug][changhui]MergedArrayData init: {:?}", array_data);
-        if (nullable) {
+        if nullable {
             for i in 0..5 {
                 if i % 2 == 0 {
                     fill_value_for_primitive(&mut array_data, &dt, i);
@@ -388,7 +380,7 @@ mod tests {
                 fill_value_for_primitive(&mut array_data, &dt, i);
             }
         }
-        let ad = array_data.freeze(None);
+        let ad = array_data.freeze();
         println!("{:?}", ad);
         let column = make_arrow_array(ad);
         let schema = Schema::new(vec![field]);

@@ -1,14 +1,28 @@
 use crate::sorted_merge::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
 use crate::sorted_merge::fetcher::NonUniqueSortKeyRangeFetcher;
 use crate::sorted_merge::sorted_stream_merger::SortKeyRange;
-use crate::sorted_merge::sort_key_range::SortKeyRangeInBatch;
+use crate::sorted_merge::sort_key_range::{SortKeyBatchRange, SortKeyArrayRange, SortKeyArrayRanges};
+use crate::sorted_merge::record_batch_builder::MergedArrayData;
+use crate::sorted_merge::merge_operator::MergeOperator;
+
+
 use async_trait::async_trait;
 use dary_heap::DaryHeap;
 use datafusion::error::Result;
 use futures::future::try_join_all;
 use smallvec::SmallVec;
 
-use arrow::{error::Result as ArrowResult, error::ArrowError,  record_batch::RecordBatch};
+use arrow::{error::Result as ArrowResult, 
+    error::ArrowError,  
+    record_batch::RecordBatch, 
+    datatypes::{SchemaRef, DataType, ArrowPrimitiveType, ArrowNativeType},
+    array::{
+        make_array as make_arrow_array, ArrayData, Array, ArrayRef, Int16Builder, PrimitiveBuilder,
+    },
+    buffer::Buffer,
+};
+use arrow_array::types::*;
+
 
 use std::fmt::{Debug, Formatter};
 use std::cmp::Reverse;
@@ -21,26 +35,26 @@ use std::pin::Pin;
 
 #[derive(Debug)]
 pub enum RangeCombiner {
-    MinHeapSortKeyRangeCombiner(MinHeapSortKeyRangeCombiner::<NonUniqueSortKeyRangeFetcher, 2>),
-    MinHeapSortKeyRangeInBatchCombiner(MinHeapSortKeyRangeInBatchCombiner),
+    MinHeapSortKeyBatchRangeCombiner(MinHeapSortKeyBatchRangeCombiner),
 }
 
 impl RangeCombiner {
-    pub fn new(streams_num:usize, target_batch_size: usize) -> Self {
-        RangeCombiner::MinHeapSortKeyRangeInBatchCombiner(MinHeapSortKeyRangeInBatchCombiner::new(streams_num, target_batch_size))
+    pub fn new(
+        schema: SchemaRef,
+        streams_num:usize,
+        target_batch_size: usize) -> Self {
+        RangeCombiner::MinHeapSortKeyBatchRangeCombiner(MinHeapSortKeyBatchRangeCombiner::new(schema, streams_num, target_batch_size))
     }
 
-    pub fn push_range(&mut self, range: Reverse<SortKeyRangeInBatch>) {
+    pub fn push_range(&mut self, range: Reverse<SortKeyBatchRange>) {
         match self {
-            RangeCombiner::MinHeapSortKeyRangeCombiner(combiner) => todo!("combiner.push(range)"),
-            RangeCombiner::MinHeapSortKeyRangeInBatchCombiner(combiner) => combiner.push(range)
+            RangeCombiner::MinHeapSortKeyBatchRangeCombiner(combiner) => combiner.push(range)
         };
     }
 
     pub fn poll_result(&mut self) -> RangeCombinerResult {
         match self {
-            RangeCombiner::MinHeapSortKeyRangeCombiner(combiner) => todo!("combiner.push(range)"),
-            RangeCombiner::MinHeapSortKeyRangeInBatchCombiner(combiner) => combiner.poll_result()
+            RangeCombiner::MinHeapSortKeyBatchRangeCombiner(combiner) => combiner.poll_result()
         }
     }
 }
@@ -48,29 +62,37 @@ impl RangeCombiner {
 #[derive(Debug)]
 pub enum RangeCombinerResult {
     Err(ArrowError),
-    Range(Reverse<SortKeyRangeInBatch>),
+    Range(Reverse<SortKeyBatchRange>),
     RecordBatch(ArrowResult<RecordBatch>),
 }
 
 #[derive(Debug)]
-pub struct MinHeapSortKeyRangeInBatchCombiner{
-    heap: BinaryHeap<Reverse<SortKeyRangeInBatch>>,
-    in_progress: Vec<SortKeyRange>,
+pub struct MinHeapSortKeyBatchRangeCombiner{
+    schema: SchemaRef,
+    heap: BinaryHeap<Reverse<SortKeyBatchRange>>,
+    in_progress: Vec<SortKeyArrayRanges>,
     target_batch_size: usize,
-    current_sort_key_range: SortKeyRange
+    current_sort_key_range: SortKeyArrayRanges,
+    merge_operator: MergeOperator,
 }
 
-impl MinHeapSortKeyRangeInBatchCombiner{
-    pub fn new(streams_num: usize, target_batch_size: usize) -> Self {
-        MinHeapSortKeyRangeInBatchCombiner{
+impl MinHeapSortKeyBatchRangeCombiner{
+    pub fn new(
+        schema: SchemaRef,
+        streams_num: usize, 
+        target_batch_size: usize) -> Self {
+        let new_range = SortKeyArrayRanges::new(schema.clone(), None);
+        MinHeapSortKeyBatchRangeCombiner{
+            schema: schema.clone(),
             heap: BinaryHeap::with_capacity(streams_num),
             in_progress: vec![],
             target_batch_size: target_batch_size,
-            current_sort_key_range: SortKeyRange::new(streams_num)
+            current_sort_key_range: new_range,
+            merge_operator: MergeOperator::UseLast,
         }
     }
 
-    pub fn push(&mut self, range: Reverse<SortKeyRangeInBatch>) {
+    pub fn push(&mut self, range: Reverse<SortKeyBatchRange>) {
         self.heap.push(range)
     }
 
@@ -82,7 +104,11 @@ impl MinHeapSortKeyRangeInBatchCombiner{
                 Some(Reverse(range)) => {
                     if self.current_sort_key_range.current() == range.current() {
                         self.current_sort_key_range.add_range_in_batch(range.clone());
-                    };
+                    } else {
+                        self.in_progress.push(self.current_sort_key_range.clone());
+                        self.current_sort_key_range = SortKeyArrayRanges::new(self.schema.clone(), Some(range.rows.clone()));
+                        self.current_sort_key_range.add_range_in_batch(range.clone());
+                    }
                     RangeCombinerResult::Range(Reverse(range)) 
                 }
                 None if self.in_progress.is_empty() => RangeCombinerResult::Err(ArrowError::DivideByZero),
@@ -92,8 +118,52 @@ impl MinHeapSortKeyRangeInBatchCombiner{
     }
  
     fn build_record_batch(&mut self) -> ArrowResult<RecordBatch> {
-        todo!()
+        let columns = self
+            .schema
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(column_idx, field)| {
+                let capacity = self.in_progress.len();
+                // let mut array_data = MergedArrayData::new(&field, batch_size);
+                
+                // if self.in_progress.is_empty() {
+                //     return make_arrow_array(array_data.freeze());
+                // }
+
+                let data_type = (*field.data_type()).clone();
+                let ranges_per_col:Vec<Vec<SortKeyArrayRange>> = self.in_progress
+                    .iter()
+                    .map(|ranges_per_row| ranges_per_row.column(column_idx))
+                    .collect::<Vec<_>>();
+
+                match data_type {
+                    DataType::Int16 => merge_sort_key_array_ranges_with_primitive::<Int16Type>(capacity, &ranges_per_col, &self.merge_operator),
+                    _ => todo!()
+                }
+                
+            })
+            .collect();
+
+        self.in_progress.clear();
+
+        // todo!("drain exhausted batch");
+
+        RecordBatch::try_new(self.schema.clone(), columns)
     }
+
+
+   
+
+}
+
+fn merge_sort_key_array_ranges_with_primitive<T:ArrowPrimitiveType>(capacity:usize, ranges:&Vec<Vec<SortKeyArrayRange>>, merge_operator:&MergeOperator) ->ArrayRef {
+    let mut array_data_builder = PrimitiveBuilder::<T>::with_capacity(capacity);
+    ranges.iter().map( |ranges_pre_row| {
+        array_data_builder.append_value(merge_operator.merge_primitive::<T>(ranges_pre_row))
+    });
+    
+    make_arrow_array(array_data_builder.finish().into_data())
 }
 
 
@@ -193,11 +263,16 @@ mod tests {
     use crate::sorted_merge::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
     use crate::sorted_merge::combiner::MinHeapSortKeyRangeCombiner;
     use crate::sorted_merge::fetcher::NonUniqueSortKeyRangeFetcher;
-    use crate::sorted_merge::sorted_stream_merger::{SortKeyRangeInBatch, SortKeyRange};
+    use crate::sorted_merge::sorted_stream_merger::{SortKeyRange};
+    use crate::sorted_merge::sort_key_range::SortKeyBatchRange;
     use arrow::array::{ArrayRef, Int32Array};
+    use arrow::array::as_primitive_array;
+    use arrow::datatypes::Int32Type;
+    use arrow::array::Int32Builder;
     use arrow::array::{make_array as make_arrow_array};
     use arrow::record_batch::RecordBatch;
     use arrow_schema::{DataType, Field, Schema};
+
     use datafusion::error::Result;
     use datafusion::execution::context::TaskContext;
     use datafusion::from_slice::FromSlice;
@@ -206,6 +281,8 @@ mod tests {
     use datafusion::physical_plan::memory::MemoryExec;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::prelude::SessionContext;
+    use datafusion::assert_batches_eq;
+
     use futures_util::StreamExt;
     use std::future::Ready;
     use std::sync::Arc;
@@ -238,7 +315,7 @@ mod tests {
         RecordBatch::try_from_iter(vec![(name, a)]).unwrap()
     }
 
-    fn assert_sort_key_range_in_batch(sk: &SortKeyRangeInBatch, begin_row: usize, end_row: usize, batch: &RecordBatch) {
+    fn assert_sort_key_range_in_batch(sk: &SortKeyBatchRange, begin_row: usize, end_row: usize, batch: &RecordBatch) {
         assert_eq!(sk.begin_row, begin_row);
         assert_eq!(sk.end_row, end_row);
         assert_eq!(sk.batch.as_ref(), batch);
@@ -389,9 +466,11 @@ mod tests {
         let mut result = 0i32;
         for i in 0..sort_key_ranges.len() {
             let last_range_in_batch = sort_key_ranges[i].sort_key_ranges.last().unwrap();
-            let arr = last_range_in_batch.batch.column(0).as_any()
-                    .downcast_ref::<Int32Array>()
-                    .expect("Failed to downcast");
+            
+            let arr = as_primitive_array::<Int32Type>(last_range_in_batch.batch.column(0));
+            // .as_any()
+            //         .downcast_ref::<Int32Array>()
+            //         .expect("Failed to downcast");
             let p = arr.value(last_range_in_batch.end_row);
             result += p;
         }
@@ -441,14 +520,7 @@ mod tests {
         let mut array_data = MergedArrayData::new(&field, 6);
 
 
-        let id_array: Int32Array = Int32Array::from(vec![0, 3, 4, 9, 12, 5]);
-        let result_schema = Schema::new(vec![
-            Field::new("id", DataType::Int32, false)
-        ]);
-        let result_batch = RecordBatch::try_new(
-            Arc::new(result_schema),
-            vec![Arc::new(id_array)]
-        ).unwrap();
+
         let dt = DataType::Int32;
 
         // [0] from s3
@@ -473,10 +545,50 @@ mod tests {
         let ranges = combiner.next().await.unwrap();
         assert!(ranges.is_none());
 
-        let ad = array_data.freeze(None);
+        let ad = array_data.freeze();
         let column = make_arrow_array(ad);
         let schema = Schema::new(vec![field]);
         let rb = RecordBatch::try_new(std::sync::Arc::new(schema), vec![column]).unwrap();
-        assert_eq!(rb, result_batch);
+        assert_batches_eq!(
+            &[
+                "+----+",
+                "| id |",
+                "+----+",
+                "| 0  |",
+                "| 3  |",
+                "| 4  |",
+                "| 9  |",
+                "| 12 |",
+                "| 5  |",
+                "+----+",
+            ]
+            , &[rb]);
+    }
+
+    #[test]
+    fn test_array_data_builder() {
+        let mut primitive_array_builder = Int32Builder::with_capacity(100);
+
+        // Append an individual primitive value
+        primitive_array_builder.append_value(55);
+    
+        // Append a null value
+        primitive_array_builder.append_null();
+    
+        // Append a slice of primitive values
+        primitive_array_builder.append_slice(&[39, 89, 12]);
+    
+        // Append lots of values
+        primitive_array_builder.append_null();
+        primitive_array_builder.append_slice(&(25..50).collect::<Vec<i32>>());
+    
+        // Build the `PrimitiveArray`
+        let primitive_array = primitive_array_builder.finish();
+        // Long arrays will have an ellipsis printed in the middle
+        println!("{:?}", primitive_array);
+
+        let field = Field::new("id", DataType::Int32, true);
+        let schema = Schema::new(vec![field]);
+        let rb = RecordBatch::try_new(std::sync::Arc::new(schema), vec![Arc::new(primitive_array)]).unwrap();
     }
 }
