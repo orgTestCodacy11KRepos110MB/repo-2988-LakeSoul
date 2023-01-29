@@ -18,6 +18,7 @@ use arrow::{error::Result as ArrowResult,
     datatypes::{SchemaRef, DataType, ArrowPrimitiveType, ArrowNativeType},
     array::{
         make_array as make_arrow_array, ArrayData, Array, ArrayRef, Int16Builder, PrimitiveBuilder,
+        BooleanBuilder,
     },
     buffer::Buffer,
 };
@@ -139,6 +140,7 @@ impl MinHeapSortKeyBatchRangeCombiner{
 
                 match data_type {
                     DataType::Int16 => merge_sort_key_array_ranges_with_primitive::<Int16Type>(capacity, &ranges_per_col, &self.merge_operator),
+                    DataType::Boolean => merge_sort_key_array_ranges_with_boolean(capacity, &ranges_per_col, &self.merge_operator),
                     _ => todo!()
                 }
                 
@@ -160,9 +162,28 @@ impl MinHeapSortKeyBatchRangeCombiner{
 fn merge_sort_key_array_ranges_with_primitive<T:ArrowPrimitiveType>(capacity:usize, ranges:&Vec<Vec<SortKeyArrayRange>>, merge_operator:&MergeOperator) ->ArrayRef {
     let mut array_data_builder = PrimitiveBuilder::<T>::with_capacity(capacity);
     ranges.iter().map( |ranges_pre_row| {
-        array_data_builder.append_value(merge_operator.merge_primitive::<T>(ranges_pre_row))
+        let res = merge_operator.merge_primitive::<T>(ranges_pre_row);
+        if res.is_some() {
+            array_data_builder.append_value(res.unwrap());
+        } else {
+            array_data_builder.append_null();
+        }
     });
     
+    make_arrow_array(array_data_builder.finish().into_data())
+}
+
+fn merge_sort_key_array_ranges_with_boolean(capacity:usize, ranges:&Vec<Vec<SortKeyArrayRange>>, merge_operator:&MergeOperator) ->ArrayRef {
+    let mut array_data_builder = BooleanBuilder::with_capacity(capacity);
+    ranges.iter().map( |ranges_pre_row| {
+        let res = merge_operator.merge_boolean(ranges_pre_row);
+        if res.is_some() {
+            array_data_builder.append_value(res.unwrap());
+        } else {
+            array_data_builder.append_null();
+        }
+    });
+
     make_arrow_array(array_data_builder.finish().into_data())
 }
 
@@ -262,17 +283,20 @@ mod tests {
     use crate::sorted_merge::record_batch_builder::MergedArrayData;
     use crate::sorted_merge::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
     use crate::sorted_merge::combiner::MinHeapSortKeyRangeCombiner;
+    use crate::sorted_merge::combiner::merge_sort_key_array_ranges_with_primitive;
     use crate::sorted_merge::fetcher::NonUniqueSortKeyRangeFetcher;
     use crate::sorted_merge::sorted_stream_merger::{SortKeyRange};
-    use crate::sorted_merge::sort_key_range::SortKeyBatchRange;
-    use arrow::array::{ArrayRef, Int32Array};
+    use crate::sorted_merge::sort_key_range::{SortKeyBatchRange, SortKeyArrayRange, SortKeyArrayRanges};
+    use crate::sorted_merge::merge_operator::MergeOperator;
+    use arrow::array::{ArrayRef, Int32Array, UInt16Array};
     use arrow::array::as_primitive_array;
-    use arrow::datatypes::Int32Type;
-    use arrow::array::Int32Builder;
+    use arrow::datatypes::{UInt16Type, Int32Type, ArrowPrimitiveType};
+    use arrow::array::{Int32Builder, PrimitiveBuilder};
     use arrow::array::{make_array as make_arrow_array};
     use arrow::record_batch::RecordBatch;
-    use arrow_schema::{DataType, Field, Schema};
+    use arrow_schema::{DataType, Field, Schema, SchemaRef};
 
+    use datafusion::arrow::util::pretty::print_batches;
     use datafusion::error::Result;
     use datafusion::execution::context::TaskContext;
     use datafusion::from_slice::FromSlice;
@@ -313,6 +337,15 @@ mod tests {
     fn create_batch_one_col_i32(name: &str, vec: &[i32]) -> RecordBatch {
         let a: ArrayRef = Arc::new(Int32Array::from_slice(vec));
         RecordBatch::try_from_iter(vec![(name, a)]).unwrap()
+    }
+
+    fn create_batch_two_col_i32_uint16(col_one_name: &str, id_vec: &[i32], col_two_name: &str, num_vec: Vec<Option<u16>>) -> RecordBatch {
+        let a: ArrayRef = Arc::new(Int32Array::from_slice(id_vec));
+        let b: ArrayRef = Arc::new(UInt16Array::from(num_vec));
+        RecordBatch::try_from_iter_with_nullable(vec![
+            (col_one_name, a, false),
+            (col_two_name, b, true),
+        ]).unwrap()
     }
 
     fn assert_sort_key_range_in_batch(sk: &SortKeyBatchRange, begin_row: usize, end_row: usize, batch: &RecordBatch) {
@@ -477,6 +510,50 @@ mod tests {
         merged_array_data.push_non_null_item(result);
     }
 
+    // fn merge_sort_key_array_ranges_with_primitive<T:ArrowPrimitiveType>(capacity:usize, ranges:&Vec<Vec<SortKeyArrayRange>>, merge_operator:&MergeOperator) ->ArrayRef {
+    //     let mut array_data_builder = PrimitiveBuilder::<T>::with_capacity(capacity);
+    //     ranges.iter().map( |ranges_pre_row| {
+    //         let res = merge_operator.merge_primitive::<T>(ranges_pre_row);
+    //         if res.is_some() {
+    //             array_data_builder.append_value(res.unwrap());
+    //         } else {
+    //             array_data_builder.append_null();
+    //         }
+    //     });
+
+    //     make_arrow_array(array_data_builder.finish().into_data())
+    // }
+
+    fn build_record_batch(in_progress: &Vec<SortKeyArrayRanges>, schema: SchemaRef) -> ArrowResult<RecordBatch> {
+        let columns = schema
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(column_idx, field)| {
+                let capacity = in_progress.len();
+                // let mut array_data = MergedArrayData::new(&field, batch_size);
+                
+                // if self.in_progress.is_empty() {
+                //     return make_arrow_array(array_data.freeze());
+                // }
+
+                let data_type = (*field.data_type()).clone();
+                let ranges_per_col:Vec<Vec<SortKeyArrayRange>> = in_progress
+                    .iter()
+                    .map(|ranges_per_row| ranges_per_row.column(column_idx))
+                    .collect::<Vec<_>>();
+
+                match data_type {
+                    DataType::UInt16 => merge_sort_key_array_ranges_with_primitive::<UInt16Type>(capacity, &ranges_per_col, &MergeOperator::Sum),
+                    DataType::Int32 => merge_sort_key_array_ranges_with_primitive::<Int32Type>(capacity, &ranges_per_col, &MergeOperator::Sum),
+                    _ => todo!()
+                }
+                
+            })
+            .collect();
+        RecordBatch::try_new(schema.clone(), columns)
+    }
+
     #[tokio::test]
     async fn test_multi_streams_combine_and_merge() {
         let session_ctx = SessionContext::new();
@@ -492,6 +569,7 @@ mod tests {
         )
         .await
         .unwrap();
+
         let s2fetcher = create_stream_fetcher(
             1,
             vec![rb2.clone()],
@@ -511,15 +589,14 @@ mod tests {
         .await
         .unwrap();
 
+
         let mut combiner = MinHeapSortKeyRangeCombiner::<NonUniqueSortKeyRangeFetcher, 2>::with_fetchers(vec![
             s1fetcher, s2fetcher, s3fetcher,
         ]);
         combiner.init().await.unwrap();
 
         let field = Field::new("id", DataType::Int32, false);
-        let mut array_data = MergedArrayData::new(&field, 6);
-
-
+        let mut array_data = MergedArrayData::new(&field, 6); 
 
         let dt = DataType::Int32;
 
@@ -563,6 +640,126 @@ mod tests {
                 "+----+",
             ]
             , &[rb]);
+    }
+
+    #[tokio::test]
+    async fn test_multi_streams_multi_cols_combine_and_merge() {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+        let rb1 = create_batch_two_col_i32_uint16("id", &[1, 1, 3, 3, 4],
+            "salary", vec![Some(1u16), None, Some(2), Some(4), None]);
+        let rb2 = create_batch_two_col_i32_uint16("id", &[1, 1, 1, 2, 3, 3, 4],
+            "salary", vec![None, Some(1), Some(3), Some(7), Some(4), None, Some(8)]);
+        let rb3 = create_batch_two_col_i32_uint16("id", &[0, 1, 2, 3, 3, 4, 4, 5],
+            "salary", vec![None, Some(6), Some(3), Some(5), Some(6), None, None, Some(7)]);
+        // print_batches(&[rb1.clone(), rb2.clone(), rb3.clone()]);
+        let s1fetcher = create_stream_fetcher(
+            0,
+            vec![rb1.clone()],
+            task_ctx.clone(),
+            vec!["id"],
+        )
+        .await.
+        unwrap();
+        let s2fetcher = create_stream_fetcher(
+            1,
+            vec![rb2.clone()],
+            task_ctx.clone(),
+            vec!["id"],
+        )
+        .await
+        .unwrap();
+        let s3fetcher = create_stream_fetcher(
+            2,
+            vec![
+                rb3.clone()
+            ],
+            task_ctx.clone(),
+            vec!["id"],
+        )
+        .await
+        .unwrap();
+
+        let mut combiner = MinHeapSortKeyRangeCombiner::<NonUniqueSortKeyRangeFetcher, 2>::with_fetchers(vec![
+            s1fetcher, s2fetcher, s3fetcher,
+        ]);
+        combiner.init().await.unwrap();
+
+        let field_a = Field::new("id", DataType::Int32, false);
+        let field_b = Field::new("salary", DataType::UInt16, true);
+        let schema = Arc::new(Schema::new(vec![field_a, field_b]));
+        let ranges = combiner.next().await.unwrap().unwrap();
+        let mut in_progrss: Vec<SortKeyArrayRanges> = vec![];
+        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        for i in 0..ranges.len() {
+            let range = ranges[i].clone();
+            println!("{:?}", range);
+            println!("{}", range.sort_key_ranges.len());
+            range.sort_key_ranges.iter().map( |batch_range| {
+                println!("{:?}", batch_range);
+                current_sort_key_range.add_range_in_batch((*batch_range).clone());
+            });
+            in_progrss.push(current_sort_key_range);
+            current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        }
+
+        let ranges = combiner.next().await.unwrap().unwrap();
+        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        for i in 0..ranges.len() {
+            let range = ranges[i].clone();
+            range.sort_key_ranges.iter().map( |batch_range| {
+                current_sort_key_range.add_range_in_batch((*batch_range).clone());
+            });
+            in_progrss.push(current_sort_key_range);
+            current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        }
+
+        let ranges = combiner.next().await.unwrap().unwrap();
+        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        for i in 0..ranges.len() {
+            let range = ranges[i].clone();
+            range.sort_key_ranges.iter().map( |batch_range| {
+                current_sort_key_range.add_range_in_batch((*batch_range).clone());
+            });
+            in_progrss.push(current_sort_key_range);
+            current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        }
+
+        let ranges = combiner.next().await.unwrap().unwrap();
+        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        for i in 0..ranges.len() {
+            let range = ranges[i].clone();
+            range.sort_key_ranges.iter().map( |batch_range| {
+                current_sort_key_range.add_range_in_batch((*batch_range).clone());
+            });
+            in_progrss.push(current_sort_key_range);
+            current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        }
+
+        let ranges = combiner.next().await.unwrap().unwrap();
+        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        for i in 0..ranges.len() {
+            let range = ranges[i].clone();
+            range.sort_key_ranges.iter().map( |batch_range| {
+                current_sort_key_range.add_range_in_batch((*batch_range).clone());
+            });
+            in_progrss.push(current_sort_key_range);
+            current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        }
+
+        let ranges = combiner.next().await.unwrap().unwrap();
+        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        for i in 0..ranges.len() {
+            let range = ranges[i].clone();
+            range.sort_key_ranges.iter().map( |batch_range| {
+                current_sort_key_range.add_range_in_batch((*batch_range).clone());
+            });
+            in_progrss.push(current_sort_key_range);
+            current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        }
+
+        let rb = build_record_batch(&in_progrss, schema.clone()).unwrap();
+        print_batches(&vec![rb]);
     }
 
     #[test]
