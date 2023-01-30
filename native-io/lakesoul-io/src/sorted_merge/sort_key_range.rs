@@ -31,13 +31,15 @@ impl SortKeyBatchRange {
     }
 
     pub fn new_and_init(begin_row: usize, stream_idx: usize, batch: Arc<RecordBatch>, rows: Arc<Rows>) -> Self {
-        SortKeyBatchRange {
+        let mut range =SortKeyBatchRange {
             begin_row,
             end_row: begin_row,
             stream_idx,
             batch,
             rows,
-        }.advance()
+        };
+        range.advance();
+        range
     }
 
     /// Returns the [`Schema`](arrow_schema::Schema) of the record batch.
@@ -72,10 +74,15 @@ impl SortKeyBatchRange {
         // t
         let current = self.clone();
         self.begin_row = self.end_row;
-        while self.end_row < self.rows.num_rows() {
-            // check if next row in this batch has same sort key
-            if self.rows.row(self.end_row) == self.rows.row(self.begin_row) {
-                self.end_row = self.end_row + 1;
+        // println!("advance {:?}", self);
+        if !self.is_finished() {
+            while self.end_row < self.rows.num_rows() {
+                // check if next row in this batch has same sort key
+                if self.rows.row(self.end_row) == self.rows.row(self.begin_row) {
+                    self.end_row = self.end_row + 1;
+                } else {
+                    break;
+                }
             }
         }
         current
@@ -141,7 +148,7 @@ pub struct SortKeyArrayRange {
 
 impl SortKeyArrayRange {
     pub fn array(&self) -> ArrayRef {
-        self.array().clone()
+        self.array.clone()
     }
 }
 
@@ -202,23 +209,41 @@ impl SortKeyArrayRanges {
     }
 
     pub fn add_range_in_batch(&mut self, range: SortKeyBatchRange) {
-        self
-        .schema
-        .fields()
-        .iter()
-        .enumerate()
-        .map(|(column_idx, field)| {
-            let idx = range
+        self.rows = Some(range.rows.clone());
+        let schema = self.schema();
+        for column_idx in 0..schema.fields().len() {
+            let name = schema.field(column_idx).name();
+
+            range
                 .schema()
-                .column_with_name(field.name())
-                .unwrap()
-                .0;
-            self.sort_key_ranges[column_idx].push(range.column(idx));
-        });
+                .column_with_name(name)
+                .map(|(idx, feild)| self.sort_key_ranges[column_idx].push(range.column(idx)));
+        };
+        // self
+        // .schema
+        // .fields()
+        // .iter()
+        // .enumerate()
+        // .map(|(column_idx, field)| {
+        //     let idx = range
+        //         .schema()
+        //         .column_with_name(field.name())
+        //         .unwrap()
+        //         .0;
+        //     self.sort_key_ranges[column_idx].push(range.column(idx));
+        // });
     }
 
     pub fn current(&self) -> Row<'_> {
         self.rows.as_ref().unwrap().row(self.sort_key_ranges[0][0].begin_row)
+    }
+
+    pub fn match_row(&self, range: &SortKeyBatchRange) -> bool {
+        // println!("match_row:\n {:?}\n {:?}", self, range);
+        match &self.rows {
+            None => true,
+            Some(rows) => rows.row(0) == range.current()
+        }
     }
 
 }

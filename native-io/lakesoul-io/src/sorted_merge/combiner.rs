@@ -98,12 +98,14 @@ impl MinHeapSortKeyBatchRangeCombiner{
     }
 
     pub fn poll_result(&mut self) -> RangeCombinerResult  {
+        // println!("poll_result {:?}", self.current_sort_key_range);
         if self.in_progress.len() == self.target_batch_size {
+            println!("in_progress has enough ranges ");
             RangeCombinerResult::RecordBatch(self.build_record_batch())
         } else {
             match self.heap.pop() {
                 Some(Reverse(range)) => {
-                    if self.current_sort_key_range.current() == range.current() {
+                    if self.current_sort_key_range.match_row(&range) {
                         self.current_sort_key_range.add_range_in_batch(range.clone());
                     } else {
                         self.in_progress.push(self.current_sort_key_range.clone());
@@ -112,13 +114,17 @@ impl MinHeapSortKeyBatchRangeCombiner{
                     }
                     RangeCombinerResult::Range(Reverse(range)) 
                 }
-                None if self.in_progress.is_empty() => RangeCombinerResult::Err(ArrowError::DivideByZero),
-                None => RangeCombinerResult::RecordBatch(self.build_record_batch())
+                None => {
+                    self.in_progress.push(self.current_sort_key_range.clone());
+                    println!("heap is exhausted");
+                    RangeCombinerResult::RecordBatch(self.build_record_batch())
+                }
             }
         }
     }
  
     fn build_record_batch(&mut self) -> ArrowResult<RecordBatch> {
+        // println!("build_record_batch {:?}", self.in_progress);
         let columns = self
             .schema
             .fields()
@@ -140,6 +146,7 @@ impl MinHeapSortKeyBatchRangeCombiner{
 
                 match data_type {
                     DataType::Int16 => merge_sort_key_array_ranges_with_primitive::<Int16Type>(capacity, &ranges_per_col, &self.merge_operator),
+                    DataType::Int32 => merge_sort_key_array_ranges_with_primitive::<Int32Type>(capacity, &ranges_per_col, &self.merge_operator),
                     DataType::Boolean => merge_sort_key_array_ranges_with_boolean(capacity, &ranges_per_col, &self.merge_operator),
                     _ => todo!()
                 }

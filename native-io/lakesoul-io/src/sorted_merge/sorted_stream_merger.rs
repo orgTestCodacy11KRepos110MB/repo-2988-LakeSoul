@@ -344,6 +344,7 @@ impl SortedStreamMerger
         }
         let mut empty_batch = false;
         {
+            // println!("maybe_poll_stream {:?}", self);
             let stream = &mut self.streams.streams[idx];
             if stream.is_terminated() {
                 return Poll::Ready(Ok(()));
@@ -356,6 +357,7 @@ impl SortedStreamMerger
                     return Poll::Ready(Err(e));
                 }
                 Some(Ok(batch)) => {
+                    // println!("maybe_poll_stream::match futures::ready! {:?}", batch);
                     if batch.num_rows() > 0 {
                         let cols = self
                             .column_expressions
@@ -376,7 +378,7 @@ impl SortedStreamMerger
                         self.batches[idx].push_back(batch.clone());
                         
                         let (batch, rows) = (Arc::new(batch), Arc::new(rows));
-                        let range = SortKeyBatchRange::new(0, 0, idx, batch.clone(), rows.clone()).advance();
+                        let range = SortKeyBatchRange::new_and_init(0, idx, batch.clone(), rows.clone());
 
                         self.window_finished[idx] = false;
 
@@ -390,6 +392,7 @@ impl SortedStreamMerger
         }
 
         if empty_batch {
+            // println!("maybe_poll_stream::empty_batch {:?}", self);
             self.maybe_poll_stream(cx, idx)
         } else {
             Poll::Ready(Ok(()))
@@ -401,7 +404,6 @@ impl SortedStreamMerger
 
 impl SortedStreamMerger
 {
-    #[inline]
     fn poll_next_inner(
         self: &mut Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -421,9 +423,11 @@ impl SortedStreamMerger
                 }
             }
         }
+        // println!("poll_next_inner: after poll all streams {:?}", self);
         
         // refer by https://docs.rs/datafusion/13.0.0/src/datafusion/physical_plan/sorts/sort_preserving_merge.rs.html#567-608
         loop {
+            // println!("poll_next_inner {:?}", self);
             match self.range_combiner.poll_result() {
                 RangeCombinerResult::Err(e) => return Poll::Ready(Some(Err(e))),
                 RangeCombinerResult::Range(Reverse(mut range)) => {
@@ -432,7 +436,7 @@ impl SortedStreamMerger
                     let current_range = range.advance();
 
                     let mut window_finished = false;
-                    if !current_range.is_finished() {
+                    if !range.is_finished() {
                         self.range_combiner.push_range(Reverse(range))
                     } else {
                         self.window_finished[stream_idx] = true;
@@ -446,8 +450,10 @@ impl SortedStreamMerger
 
                     }
                 },                
-                RangeCombinerResult::RecordBatch(batch) => 
+                RangeCombinerResult::RecordBatch(batch) => {
+                    println!("{:?}", batch);
                      return Poll::Ready(Some(batch))
+                }
                     
             }
         }
