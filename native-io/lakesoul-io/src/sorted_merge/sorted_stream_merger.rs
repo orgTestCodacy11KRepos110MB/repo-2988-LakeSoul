@@ -49,13 +49,18 @@ impl SortKeyRange {
     }
 
     pub fn clone_from(source: &SortKeyRange) -> SortKeyRange {
-        let new_range = SortKeyRange {
+        let mut new_range = SortKeyRange {
             sort_key_ranges: SmallVec::new(),
             stream_idx: source.stream_idx,
         };
+        for i in 0..source.sort_key_ranges.len() {
+            let batch_range = source.sort_key_ranges[i].clone();
+            new_range.add_range_in_batch(batch_range);
+        }
         // source.sort_key_ranges
-        //     .into_iter()
+        //     .iter()
         //     .map(|range_in_batch| {
+        //         println!("{:?}", range_in_batch);
         //         new_range.add_range_in_batch(range_in_batch.clone())
         //     });
         new_range

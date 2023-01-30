@@ -161,14 +161,14 @@ impl MinHeapSortKeyBatchRangeCombiner{
 
 fn merge_sort_key_array_ranges_with_primitive<T:ArrowPrimitiveType>(capacity:usize, ranges:&Vec<Vec<SortKeyArrayRange>>, merge_operator:&MergeOperator) ->ArrayRef {
     let mut array_data_builder = PrimitiveBuilder::<T>::with_capacity(capacity);
-    ranges.iter().map( |ranges_pre_row| {
-        let res = merge_operator.merge_primitive::<T>(ranges_pre_row);
-        if res.is_some() {
-            array_data_builder.append_value(res.unwrap());
-        } else {
-            array_data_builder.append_null();
+    for i in 0..ranges.len() {
+        let ranges_pre_row = ranges[i].clone();
+        let res = merge_operator.merge_primitive::<T>(&ranges_pre_row);
+        match res.is_some() {
+            true => array_data_builder.append_value(res.unwrap()),
+            false => array_data_builder.append_null()
         }
-    });
+    }
     
     make_arrow_array(array_data_builder.finish().into_data())
 }
@@ -283,14 +283,13 @@ mod tests {
     use crate::sorted_merge::record_batch_builder::MergedArrayData;
     use crate::sorted_merge::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
     use crate::sorted_merge::combiner::MinHeapSortKeyRangeCombiner;
-    use crate::sorted_merge::combiner::merge_sort_key_array_ranges_with_primitive;
     use crate::sorted_merge::fetcher::NonUniqueSortKeyRangeFetcher;
     use crate::sorted_merge::sorted_stream_merger::{SortKeyRange};
     use crate::sorted_merge::sort_key_range::{SortKeyBatchRange, SortKeyArrayRange, SortKeyArrayRanges};
     use crate::sorted_merge::merge_operator::MergeOperator;
-    use arrow::array::{ArrayRef, Int32Array, UInt16Array};
+    use arrow::array::{Array, ArrayRef, Int32Array, UInt16Array};
     use arrow::array::as_primitive_array;
-    use arrow::datatypes::{UInt16Type, Int32Type, ArrowPrimitiveType};
+    use arrow::datatypes::{UInt16Type, Int32Type, ArrowPrimitiveType, ArrowNativeType};
     use arrow::array::{Int32Builder, PrimitiveBuilder};
     use arrow::array::{make_array as make_arrow_array};
     use arrow::record_batch::RecordBatch;
@@ -308,6 +307,7 @@ mod tests {
     use datafusion::assert_batches_eq;
 
     use futures_util::StreamExt;
+    use parquet::data_type;
     use std::future::Ready;
     use std::sync::Arc;
     use smallvec::SmallVec;
@@ -510,33 +510,78 @@ mod tests {
         merged_array_data.push_non_null_item(result);
     }
 
-    // fn merge_sort_key_array_ranges_with_primitive<T:ArrowPrimitiveType>(capacity:usize, ranges:&Vec<Vec<SortKeyArrayRange>>, merge_operator:&MergeOperator) ->ArrayRef {
-    //     let mut array_data_builder = PrimitiveBuilder::<T>::with_capacity(capacity);
-    //     ranges.iter().map( |ranges_pre_row| {
-    //         let res = merge_operator.merge_primitive::<T>(ranges_pre_row);
-    //         if res.is_some() {
-    //             array_data_builder.append_value(res.unwrap());
-    //         } else {
-    //             array_data_builder.append_null();
-    //         }
-    //     });
+    fn merge_sort_key_array_ranges_with_primitive<T:ArrowPrimitiveType>(capacity:usize, ranges:&Vec<Vec<SortKeyArrayRange>>, merge_operator:&MergeOperator) ->ArrayRef {
+        let mut array_data_builder = PrimitiveBuilder::<T>::with_capacity(capacity);
+        for i in 0..ranges.len() {
+            let ranges_pre_row = ranges[i].clone();
+            match merge_operator {
+                MergeOperator::UseLast => {
+                    let range = ranges_pre_row.last().unwrap();
+                    if range.array().as_ref().is_valid(range.end_row) {
+                        array_data_builder.append_value(as_primitive_array::<T>(range.array().as_ref()).value(range.end_row));
+                    } else {
+                        array_data_builder.append_null();
+                    }
+                },
+                MergeOperator::Sum => {
+                    match T::DATA_TYPE {
+                        DataType::UInt8
+                        | DataType::UInt16
+                        | DataType::UInt32
+                        | DataType::UInt64
+                        | DataType::Int8
+                        | DataType::Int16 => { // todo: Int8 and Int16 may be wrong here
+                            let mut res = T::default_value().as_usize();
+                            let mut is_none = true;
+                            for i in 0..ranges_pre_row.len() {
+                                let range = ranges_pre_row[i].clone();
+                                if range.array().as_ref().is_valid(range.end_row) {
+                                    is_none = false;
+                                    res += as_primitive_array::<T>(range.array().as_ref()).value(range.end_row).as_usize();
+                                }
+                            }
+                            if is_none {
+                                array_data_builder.append_null();
+                            } else {
+                                array_data_builder.append_value(T::Native::from_usize(res).unwrap());
+                            }
+                        },
+                        DataType::Int32
+                        | DataType::Int64 => {
+                            let mut res = T::default_value().to_isize().unwrap();
+                            let mut is_none = true;
+                            ranges_pre_row.iter().map( |range| {
+                                if range.array().as_ref().is_valid(range.end_row) {
+                                    is_none = false;
+                                    res += as_primitive_array::<T>(range.array().as_ref()).value(range.end_row).to_isize().unwrap();
+                                }
+                            });
+                            if is_none {
+                                todo!()
+                            } else {
+                                todo!()
+                            }
+                        },
+                        DataType::Float16
+                        | DataType::Float32
+                        | DataType::Float64 => todo!(),
+                        _ => panic!("{} is not PrimitiveType", T::DATA_TYPE)
+                    }
+    
+                }
+            }
+        }
+    
+        make_arrow_array(array_data_builder.finish().into_data())
+    }
 
-    //     make_arrow_array(array_data_builder.finish().into_data())
-    // }
-
-    fn build_record_batch(in_progress: &Vec<SortKeyArrayRanges>, schema: SchemaRef) -> ArrowResult<RecordBatch> {
+    fn build_record_batch(in_progress: Vec<SortKeyArrayRanges>, schema: SchemaRef) -> ArrowResult<RecordBatch> {
         let columns = schema
             .fields()
             .iter()
             .enumerate()
             .map(|(column_idx, field)| {
                 let capacity = in_progress.len();
-                // let mut array_data = MergedArrayData::new(&field, batch_size);
-                
-                // if self.in_progress.is_empty() {
-                //     return make_arrow_array(array_data.freeze());
-                // }
-
                 let data_type = (*field.data_type()).clone();
                 let ranges_per_col:Vec<Vec<SortKeyArrayRange>> = in_progress
                     .iter()
@@ -545,7 +590,7 @@ mod tests {
 
                 match data_type {
                     DataType::UInt16 => merge_sort_key_array_ranges_with_primitive::<UInt16Type>(capacity, &ranges_per_col, &MergeOperator::Sum),
-                    DataType::Int32 => merge_sort_key_array_ranges_with_primitive::<Int32Type>(capacity, &ranges_per_col, &MergeOperator::Sum),
+                    DataType::Int32 => merge_sort_key_array_ranges_with_primitive::<Int32Type>(capacity, &ranges_per_col, &MergeOperator::UseLast),
                     _ => todo!()
                 }
                 
@@ -647,12 +692,14 @@ mod tests {
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
         let rb1 = create_batch_two_col_i32_uint16("id", &[1, 1, 3, 3, 4],
-            "salary", vec![Some(1u16), None, Some(2), Some(4), None]);
+            "salary", vec![Some(1u16), None, Some(2u16), Some(4u16), None]);
         let rb2 = create_batch_two_col_i32_uint16("id", &[1, 1, 1, 2, 3, 3, 4],
-            "salary", vec![None, Some(1), Some(3), Some(7), Some(4), None, Some(8)]);
+            "salary", vec![None, Some(1u16), Some(3u16), Some(7u16), Some(4u16), None, Some(8u16)]);
         let rb3 = create_batch_two_col_i32_uint16("id", &[0, 1, 2, 3, 3, 4, 4, 5],
-            "salary", vec![None, Some(6), Some(3), Some(5), Some(6), None, None, Some(7)]);
-        // print_batches(&[rb1.clone(), rb2.clone(), rb3.clone()]);
+            "salary", vec![None, Some(6u16), Some(3u16), Some(5u16), Some(6u16), None, None, Some(7u16)]);
+        // print_batches(&[rb1.clone()]);
+        // print_batches(&[rb2.clone()]);
+        // print_batches(&[rb3.clone()]);
         let s1fetcher = create_stream_fetcher(
             0,
             vec![rb1.clone()],
@@ -684,81 +731,113 @@ mod tests {
             s1fetcher, s2fetcher, s3fetcher,
         ]);
         combiner.init().await.unwrap();
+        // println!("{}", combiner.heap.len());
 
         let field_a = Field::new("id", DataType::Int32, false);
         let field_b = Field::new("salary", DataType::UInt16, true);
         let schema = Arc::new(Schema::new(vec![field_a, field_b]));
+        println!("{:?}", schema);
         let ranges = combiner.next().await.unwrap().unwrap();
+        // println!("{:?}", ranges[0].clone().sort_key_ranges);
         let mut in_progrss: Vec<SortKeyArrayRanges> = vec![];
         let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
-        for i in 0..ranges.len() {
-            let range = ranges[i].clone();
-            println!("{:?}", range);
-            println!("{}", range.sort_key_ranges.len());
-            range.sort_key_ranges.iter().map( |batch_range| {
+        // for i in 0..6 {
+        //     let ranges = combiner.next().await.unwrap().unwrap();
+        //     let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        //     for j in 0..ranges.len() {
+        //         let range = ranges[i].clone();
+        //         // println!("{:?}", range);
+        //         // println!("{}", range.sort_key_ranges.len());
+        //         for k in 0..range.sort_key_ranges.len() {
+        //             let batch_range = range.sort_key_ranges[k].clone();
+        //             println!("{:?}", batch_range);
+        //             current_sort_key_range.add_range_in_batch(batch_range);
+        //         }
+        //         // in_progrss.push(current_sort_key_range);
+        //         // current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        //     }
+        // }
+        for range in ranges.iter() {
+            // println!("{}", ranges[i].sort_key_ranges.len());
+            // let range = ranges[i].clone();
+            // println!("{:?}", range);
+            // println!("{}", range.sort_key_ranges.len());
+            for i in 0..range.sort_key_ranges.len() {
+                let batch_range = range.sort_key_ranges[i].clone();
                 println!("{:?}", batch_range);
-                current_sort_key_range.add_range_in_batch((*batch_range).clone());
-            });
-            in_progrss.push(current_sort_key_range);
-            current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+                current_sort_key_range.add_range_in_batch(batch_range);
+            }
+            // in_progrss.push(current_sort_key_range);
+            // current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
         }
+        in_progrss.push(current_sort_key_range);
 
         let ranges = combiner.next().await.unwrap().unwrap();
         let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
         for i in 0..ranges.len() {
             let range = ranges[i].clone();
-            range.sort_key_ranges.iter().map( |batch_range| {
-                current_sort_key_range.add_range_in_batch((*batch_range).clone());
-            });
-            in_progrss.push(current_sort_key_range);
-            current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+            for i in 0..range.sort_key_ranges.len() {
+                let batch_range = range.sort_key_ranges[i].clone();
+                current_sort_key_range.add_range_in_batch(batch_range);
+            }
+            // in_progrss.push(current_sort_key_range);
+            // current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
         }
+        in_progrss.push(current_sort_key_range);
 
         let ranges = combiner.next().await.unwrap().unwrap();
         let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
         for i in 0..ranges.len() {
             let range = ranges[i].clone();
-            range.sort_key_ranges.iter().map( |batch_range| {
-                current_sort_key_range.add_range_in_batch((*batch_range).clone());
-            });
-            in_progrss.push(current_sort_key_range);
-            current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+            for i in 0..range.sort_key_ranges.len() {
+                let batch_range = range.sort_key_ranges[i].clone();
+                current_sort_key_range.add_range_in_batch(batch_range);
+            }
+            // in_progrss.push(current_sort_key_range);
+            // current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
         }
+        in_progrss.push(current_sort_key_range);
 
         let ranges = combiner.next().await.unwrap().unwrap();
         let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
         for i in 0..ranges.len() {
             let range = ranges[i].clone();
-            range.sort_key_ranges.iter().map( |batch_range| {
-                current_sort_key_range.add_range_in_batch((*batch_range).clone());
-            });
-            in_progrss.push(current_sort_key_range);
-            current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+            for i in 0..range.sort_key_ranges.len() {
+                let batch_range = range.sort_key_ranges[i].clone();
+                current_sort_key_range.add_range_in_batch(batch_range);
+            }
+            // in_progrss.push(current_sort_key_range);
+            // current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
         }
+        in_progrss.push(current_sort_key_range);
 
         let ranges = combiner.next().await.unwrap().unwrap();
         let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
         for i in 0..ranges.len() {
             let range = ranges[i].clone();
-            range.sort_key_ranges.iter().map( |batch_range| {
-                current_sort_key_range.add_range_in_batch((*batch_range).clone());
-            });
-            in_progrss.push(current_sort_key_range);
-            current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+            for i in 0..range.sort_key_ranges.len() {
+                let batch_range = range.sort_key_ranges[i].clone();
+                current_sort_key_range.add_range_in_batch(batch_range);
+            }
+            // in_progrss.push(current_sort_key_range);
+            // current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
         }
+        in_progrss.push(current_sort_key_range);
 
         let ranges = combiner.next().await.unwrap().unwrap();
         let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
         for i in 0..ranges.len() {
             let range = ranges[i].clone();
-            range.sort_key_ranges.iter().map( |batch_range| {
-                current_sort_key_range.add_range_in_batch((*batch_range).clone());
-            });
-            in_progrss.push(current_sort_key_range);
-            current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+            for i in 0..range.sort_key_ranges.len() {
+                let batch_range = range.sort_key_ranges[i].clone();
+                current_sort_key_range.add_range_in_batch(batch_range);
+            }
+            // in_progrss.push(current_sort_key_range);
+            // current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
         }
+        in_progrss.push(current_sort_key_range);
 
-        let rb = build_record_batch(&in_progrss, schema.clone()).unwrap();
+        let rb = build_record_batch(in_progrss, schema.clone()).unwrap();
         print_batches(&vec![rb]);
     }
 

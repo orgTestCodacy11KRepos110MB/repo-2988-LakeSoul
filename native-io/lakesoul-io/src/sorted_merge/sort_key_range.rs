@@ -131,7 +131,7 @@ pub struct SortKeyArrayRange {
 
 impl SortKeyArrayRange {
     pub fn array(&self) -> ArrayRef {
-        self.array().clone()
+        self.array.clone()
     }
 }
 
@@ -192,19 +192,14 @@ impl SortKeyArrayRanges {
     }
 
     pub fn add_range_in_batch(&mut self, range: SortKeyBatchRange) {
-        self
-        .schema
-        .fields()
-        .iter()
-        .enumerate()
-        .map(|(column_idx, field)| {
-            let idx = range
-                .schema()
-                .column_with_name(field.name())
-                .unwrap()
-                .0;
-            self.sort_key_ranges[column_idx].push(range.column(idx));
-        });
+        let fields = self.schema.fields();
+        for i in 0..fields.len() {
+            let range_schema = range.schema();
+            let idx_field = range_schema.column_with_name(fields[i].name());
+            if idx_field.is_some() {
+                self.sort_key_ranges[i].push(range.column(idx_field.unwrap().0));
+            }
+        }
     }
 
     pub fn current(&self) -> Row<'_> {
