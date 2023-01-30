@@ -467,6 +467,12 @@ impl Stream for SortedStreamMerger
     }
 }
 
+impl RecordBatchStream for SortedStreamMerger {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+}
+
 
 
 #[cfg(test)]
@@ -474,13 +480,23 @@ mod tests {
     use std::sync::Arc;
     use std::collections::BTreeMap;
 
+    use futures::stream::Fuse;
+    use futures::StreamExt;
+    use futures::TryStreamExt;
+
     use arrow::compute::SortOptions;
     use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+    use arrow::record_batch::RecordBatch;
+    use arrow::array::Int32Array;
+    use arrow::array::ArrayRef;
 
-    
+    use datafusion::error::Result;
+    use datafusion::from_slice::FromSlice;
     use datafusion::prelude::SessionContext;
+    use datafusion::execution::context::TaskContext;
     use datafusion::physical_expr::PhysicalSortExpr;    
     use datafusion::physical_plan::expressions::col;
+    use datafusion::physical_plan::{SendableRecordBatchStream, memory::MemoryExec, ExecutionPlan, common};
 
 
     use crate::sorted_merge::sorted_stream_merger::{SortedStream, SortedStreamMerger};
@@ -561,5 +577,96 @@ mod tests {
         ]);
     
         Arc::new(schema)
+    }
+
+    use crate::sorted_merge::sort_key_range::SortKeyBatchRange;
+    use crate::sorted_merge::combiner::RangeCombiner;
+
+    fn create_batch_one_col_i32(name: &str, vec: &[i32]) -> RecordBatch {
+        let a: ArrayRef = Arc::new(Int32Array::from_slice(vec));
+        RecordBatch::try_from_iter(vec![(name, a)]).unwrap()
+    }
+
+    async fn create_stream(
+        stream_idx: usize,
+        batches: Vec<RecordBatch>,
+        context: Arc<TaskContext>,
+        sort_fields: Vec<&str>,
+    ) -> Result<SortedStream> {
+        let schema = batches[0].schema();
+        let sort_exprs: Vec<_> = sort_fields
+            .into_iter()
+            .map(|field| PhysicalSortExpr {
+                expr: col(field, &schema).unwrap(),
+                options: Default::default(),
+            })
+            .collect();
+        let batches = [batches];
+        let exec = MemoryExec::try_new(&batches, schema.clone(), None).unwrap();
+        let stream = exec.execute(0, context.clone()).unwrap();
+        Ok(SortedStream::new(stream))
+        // NonUniqueSortKeyRangeFetcher::new(stream_idx, fused, &sort_exprs, schema)
+    }
+
+    #[tokio::test]
+    async fn test_sort_perserving_stream() {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+        let s1b1 = create_batch_one_col_i32("a", &[1, 1, 3, 3, 4]);
+        let schema = s1b1.schema();
+        
+        let s1b2 = create_batch_one_col_i32("a", &[4, 5]);
+        let s1b3 = create_batch_one_col_i32("a", &[]);
+        let s1b4 = create_batch_one_col_i32("a", &[5]);
+        let s1b5 = create_batch_one_col_i32("a", &[5, 6, 6]);
+        let s1 = create_stream(
+            0,
+            vec![s1b1, s1b2, s1b3, s1b4, s1b5],
+            task_ctx.clone(),
+            vec!["a"],
+        ).await.unwrap();
+
+        let s2b1 = create_batch_one_col_i32("a", &[3, 4]);
+        let s2b2 = create_batch_one_col_i32("a", &[4, 5]);
+        let s2b3 = create_batch_one_col_i32("a", &[]);
+        let s2b4 = create_batch_one_col_i32("a", &[5]);
+        let s2b5 = create_batch_one_col_i32("a", &[5, 7]);
+        let s2 = create_stream(
+            1,
+            vec![s2b1, s2b2, s2b3, s2b4, s2b5],
+            task_ctx.clone(),
+            vec!["a"],
+        ).await.unwrap();
+
+        let s3b1 = create_batch_one_col_i32("a", &[]);
+        let s3b2 = create_batch_one_col_i32("a", &[5]);
+        let s3b3 = create_batch_one_col_i32("a", &[5, 7]);
+        let s3b4 = create_batch_one_col_i32("a", &[7, 9]);
+        let s3b5 = create_batch_one_col_i32("a", &[]);
+        let s3b6 = create_batch_one_col_i32("a", &[10]);
+        let s3 = create_stream(
+            2,
+            vec![s3b1, s3b2, s3b3, s3b4, s3b5, s3b6],
+            task_ctx.clone(),
+            vec!["a"],
+        ).await.unwrap();
+
+        let sort_fields = vec!["a"];
+        let sort_exprs: Vec<_> = sort_fields
+            .into_iter()
+            .map(|field| PhysicalSortExpr {
+                expr: col(field, &schema).unwrap(),
+                options: Default::default(),
+            })
+            .collect();
+
+        
+        let merge_stream = SortedStreamMerger::new_from_streams(
+            vec![s1, s2, s3],
+            schema,
+            &sort_exprs, 
+            2).unwrap();
+        let merged = common::collect(Box::pin(merge_stream)).await.unwrap();
+
     }
 }

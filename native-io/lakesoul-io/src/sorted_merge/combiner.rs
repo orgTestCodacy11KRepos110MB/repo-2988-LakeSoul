@@ -139,7 +139,8 @@ impl MinHeapSortKeyBatchRangeCombiner{
 
                 match data_type {
                     DataType::Int16 => merge_sort_key_array_ranges_with_primitive::<Int16Type>(capacity, &ranges_per_col, &self.merge_operator),
-                    _ => todo!()
+                    DataType::Int32 => merge_sort_key_array_ranges_with_primitive::<Int32Type>(capacity, &ranges_per_col, &self.merge_operator),
+                    _ => unimplemented!("unimplemented for other cases")
                 }
                 
             })
