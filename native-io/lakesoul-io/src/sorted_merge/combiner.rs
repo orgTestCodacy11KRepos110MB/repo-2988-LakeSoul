@@ -169,7 +169,7 @@ fn merge_sort_key_array_ranges_with_primitive<T:ArrowPrimitiveType>(capacity:usi
             false => array_data_builder.append_null()
         }
     }
-    
+
     make_arrow_array(array_data_builder.finish().into_data())
 }
 
@@ -593,7 +593,7 @@ mod tests {
                     DataType::Int32 => merge_sort_key_array_ranges_with_primitive::<Int32Type>(capacity, &ranges_per_col, &MergeOperator::UseLast),
                     _ => todo!()
                 }
-                
+
             })
             .collect();
         RecordBatch::try_new(schema.clone(), columns)
@@ -641,7 +641,7 @@ mod tests {
         combiner.init().await.unwrap();
 
         let field = Field::new("id", DataType::Int32, false);
-        let mut array_data = MergedArrayData::new(&field, 6); 
+        let mut array_data = MergedArrayData::new(&field, 6);
 
         let dt = DataType::Int32;
 

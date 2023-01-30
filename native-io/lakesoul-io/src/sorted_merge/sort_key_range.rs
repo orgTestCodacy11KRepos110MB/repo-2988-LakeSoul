@@ -30,6 +30,16 @@ impl SortKeyBatchRange {
         }
     }
 
+    pub fn new_and_init(begin_row: usize, stream_idx: usize, batch: Arc<RecordBatch>, rows: Arc<Rows>) -> Self {
+        SortKeyBatchRange {
+            begin_row,
+            end_row: begin_row,
+            stream_idx,
+            batch,
+            rows,
+        }.advance()
+    }
+
     /// Returns the [`Schema`](arrow_schema::Schema) of the record batch.
     pub fn schema(&self) -> SchemaRef {
         self.batch.schema()
