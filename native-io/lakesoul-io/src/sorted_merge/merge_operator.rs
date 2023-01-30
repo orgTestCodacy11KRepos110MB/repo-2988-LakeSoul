@@ -22,8 +22,8 @@ impl MergeOperator{
         match self {
             MergeOperator::UseLast => {
                 let range = ranges.last().unwrap();
-                if range.array().as_ref().is_valid(range.end_row) {
-                    return Some(as_primitive_array::<T>(range.array().as_ref()).value(range.end_row))
+                if range.array().as_ref().is_valid(range.end_row - 1) {
+                    return Some(as_primitive_array::<T>(range.array().as_ref()).value(range.end_row - 1))
                 } else {
                     return None
                 }
@@ -38,18 +38,12 @@ impl MergeOperator{
                     | DataType::Int16 => { // todo: Int8 and Int16 may be wrong here
                         let mut res = T::default_value().as_usize();
                         let mut is_none = true;
-                        // ranges.iter().map( |range| {
-                        //     if range.array().as_ref().is_valid(range.end_row) {
-                        //         is_none = false;
-                        //         res += as_primitive_array::<T>(range.array().as_ref()).value(range.end_row).as_usize();
-                        //     }
-                        // });
                         for i in 0..ranges.len() {
                             let range = ranges[i].clone();
                             if i < ranges.len() - 1 && range.stream_idx == ranges[i + 1].stream_idx { continue; }
-                            if range.array().as_ref().is_valid(range.end_row) {
+                            if range.array().as_ref().is_valid(range.end_row - 1) {
                                 is_none = false;
-                                res += as_primitive_array::<T>(range.array().as_ref()).value(range.end_row).as_usize();
+                                res += as_primitive_array::<T>(range.array().as_ref()).value(range.end_row - 1).as_usize();
                             }
                         }
                         if is_none {
