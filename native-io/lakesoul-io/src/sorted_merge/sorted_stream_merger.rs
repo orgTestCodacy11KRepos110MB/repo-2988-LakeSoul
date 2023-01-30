@@ -57,12 +57,6 @@ impl SortKeyRange {
             let batch_range = source.sort_key_ranges[i].clone();
             new_range.add_range_in_batch(batch_range);
         }
-        // source.sort_key_ranges
-        //     .iter()
-        //     .map(|range_in_batch| {
-        //         println!("{:?}", range_in_batch);
-        //         new_range.add_range_in_batch(range_in_batch.clone())
-        //     });
         new_range
     }
 
