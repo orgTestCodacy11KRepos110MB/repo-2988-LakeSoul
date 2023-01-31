@@ -448,7 +448,7 @@ mod tests {
     use arrow::compute::SortOptions;
     use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use arrow::record_batch::RecordBatch;
-    use arrow::array::Int32Array;
+    use arrow::array::{Int32Array, StringArray};
     use arrow::array::ArrayRef;
     use arrow::util::pretty::print_batches;
     use arrow::util::display::array_value_to_string;
@@ -725,7 +725,13 @@ mod tests {
         RecordBatch::try_from_iter(iter).unwrap()
     }
 
-
+    fn create_batch_string(names: Vec<&str>, id_value: &[i32], str_value: Vec<&str>) -> RecordBatch {
+        let mut values: Vec<ArrayRef> = vec![];
+        values.push(Arc::new(Int32Array::from_slice(id_value)) as ArrayRef);
+        values.push(Arc::new(StringArray::from(str_value)) as ArrayRef);
+        let iter = names.into_iter().zip(values).collect::<Vec<_>>();
+        RecordBatch::try_from_iter(iter).unwrap()
+    }
 
     #[tokio::test]
     async fn test_sorted_stream_merger_multi_columns() {
@@ -859,5 +865,135 @@ mod tests {
             &merged);
     }
 
+    #[tokio::test]
+    async fn test_sorted_stream_merger_with_string() {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+        let s1b1 = create_batch_string(vec!["id", "a"], &[1, 1, 3, 3, 4], vec!["1001", "102", "10003", "10004", "15"]);
+        let s1b2 = create_batch_string(vec!["id", "a"], &[4, 5], vec!["1006", "10007"]);
+        let s1b3 = create_batch_string(vec!["id", "a"], &[], vec![]);
+        let s1b4 = create_batch_string(vec!["id", "a"], &[5], vec!["100008"]);
+        let s1b5 = create_batch_string(vec!["id", "a"], &[5, 5, 6], vec!["10009", "10010", "10011"]);
+        assert_batches_eq!(
+            &[
+                "+----+--------+",
+                "| id | a      |",
+                "+----+--------+",
+                "| 1  | 1001   |",
+                "| 1  | 102    |",
+                "| 3  | 10003  |",
+                "| 3  | 10004  |",
+                "| 4  | 15     |",
+                "| 4  | 1006   |",
+                "| 5  | 10007  |",
+                "| 5  | 100008 |",
+                "| 5  | 10009  |",
+                "| 5  | 10010  |",
+                "| 6  | 10011  |",
+                "+----+--------+",
+            ]
+            , &[s1b1.clone(), s1b2.clone(), s1b3.clone(), s1b4.clone(), s1b5.clone()]);
 
+        
+        let s2b1 = create_batch_string(vec!["id", "b"], &[3, 4], vec!["201", "200002"]);
+        let s2b2 = create_batch_string(vec!["id", "b"], &[4, 5], vec!["20003", "20004"]);
+        let s2b3 = create_batch_string(vec!["id", "b"], &[], vec![]);
+        let s2b4 = create_batch_string(vec!["id", "b"], &[5], vec!["20005"]);
+        let s2b5 = create_batch_string(vec!["id", "b"], &[5, 7], vec!["20006", "20007"]);
+        assert_batches_eq!(
+            &[
+                "+----+--------+",
+                "| id | b      |",
+                "+----+--------+",
+                "| 3  | 201    |",
+                "| 4  | 200002 |",
+                "| 4  | 20003  |",
+                "| 5  | 20004  |",
+                "| 5  | 20005  |",
+                "| 5  | 20006  |",
+                "| 7  | 20007  |",
+                "+----+--------+",
+            ]
+            , &[s2b1.clone(), s2b2.clone(), s2b3.clone(), s2b4.clone(), s2b5.clone()]);
+        let s3b1 = create_batch_string(vec!["id", "c"], &[], vec![]);
+        let s3b2 = create_batch_string(vec!["id", "c"], &[5, 5], vec!["30001", "30002"]);
+        let s3b3 = create_batch_string(vec!["id", "c"], &[5, 7], vec!["33", "30004"]);
+        let s3b4 = create_batch_string(vec!["id", "c"], &[], vec![]);
+        let s3b5 = create_batch_string(vec!["id", "c"], &[7, 9], vec!["30005", "30006"]);
+        let s3b6 = create_batch_string(vec!["id", "c"], &[10], vec!["300007"]);
+        assert_batches_eq!(
+            &[
+                "+----+--------+",
+                "| id | c      |",
+                "+----+--------+",
+                "| 5  | 30001  |",
+                "| 5  | 30002  |",
+                "| 5  | 33     |",
+                "| 7  | 30004  |",
+                "| 7  | 30005  |",
+                "| 9  | 30006  |",
+                "| 10 | 300007 |",
+                "+----+--------+",
+            ]
+            , &[s3b1.clone(), s3b2.clone(), s3b3.clone(), s3b4.clone(), s3b5.clone(), s3b6.clone()]);
+        
+        let s1 = create_stream(
+            1,
+            vec![s1b1.clone(), s1b2.clone(), s1b3.clone(), s1b4.clone(), s1b5.clone()],
+            task_ctx.clone(),
+            vec!["id"],
+        ).await.unwrap();
+        let s2 = create_stream(
+            2,
+            vec![s2b1.clone(), s2b2.clone(), s2b3.clone(), s2b4.clone(), s2b5.clone()],
+            task_ctx.clone(),
+            vec!["id"],
+        ).await.unwrap();
+        let s3 = create_stream(
+            3,
+            vec![s3b1.clone(), s3b2.clone(), s3b3.clone(), s3b4.clone(), s3b5.clone(), s3b6.clone()],
+            task_ctx.clone(),
+            vec!["id"],
+        ).await.unwrap();
+
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Int32, false), 
+            Field::new("a", DataType::Utf8, true), 
+            Field::new("b", DataType::Utf8, true), 
+            Field::new("c", DataType::Utf8, true), ]);
+
+        let sort_fields = vec!["id"];
+        let sort_exprs: Vec<_> = sort_fields
+            .into_iter()
+            .map(|field| PhysicalSortExpr {
+                expr: col(field, &schema).unwrap(),
+                options: Default::default(),
+            })
+            .collect();
+
+        
+        let merge_stream = SortedStreamMerger::new_from_streams(
+            vec![s1, s2, s3],
+            Arc::new(schema),
+            &sort_exprs, 
+            2)
+            .unwrap();
+        let merged = common::collect(Box::pin(merge_stream)).await.unwrap();
+        assert_batches_eq!(
+            &[
+                "+----+-------+-------+--------+",
+                "| id | a     | b     | c      |",
+                "+----+-------+-------+--------+",
+                "| 1  | 102   |       |        |",
+                "| 3  | 10004 | 201   |        |",
+                "| 4  | 1006  | 20003 |        |",
+                "| 5  | 10010 | 20006 | 33     |",
+                "| 6  | 10011 |       |        |",
+                "| 7  |       | 20007 | 30005  |",
+                "| 9  |       |       | 30006  |",
+                "| 10 |       |       | 300007 |",
+                "+----+-------+-------+--------+",
+            ], 
+            &merged);
+    }
 }

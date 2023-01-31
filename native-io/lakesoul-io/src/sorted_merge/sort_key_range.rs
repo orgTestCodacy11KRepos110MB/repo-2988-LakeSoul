@@ -207,7 +207,6 @@ impl SortKeyArrayRanges {
         };
     }
 
-
     pub fn is_empty(&self) -> bool{
         self.batch_range.is_none()
     }
