@@ -18,7 +18,7 @@ use arrow::{error::Result as ArrowResult,
     datatypes::{SchemaRef, DataType, ArrowPrimitiveType, ArrowNativeType},
     array::{
         make_array as make_arrow_array, ArrayData, Array, ArrayRef, Int16Builder, PrimitiveBuilder,
-        BooleanBuilder,
+        BooleanBuilder, OffsetSizeTrait, GenericStringBuilder
     },
     buffer::Buffer,
 };
@@ -145,6 +145,8 @@ impl MinHeapSortKeyBatchRangeCombiner{
                 match data_type {
                     DataType::Int16 => merge_sort_key_array_ranges_with_primitive::<Int16Type>(capacity, &ranges_per_col, &self.merge_operator),
                     DataType::Int32 => merge_sort_key_array_ranges_with_primitive::<Int32Type>(capacity, &ranges_per_col, &self.merge_operator),
+                    // Note: If the maximum length (in bytes) of the stored string exceeds the maximum value of i32, we need to update i32 to i64
+                    DataType::Utf8 => merge_sort_key_array_ranges_with_utf8::<i32>(capacity, &ranges_per_col, &self.merge_operator),
                     DataType::Boolean => merge_sort_key_array_ranges_with_boolean(capacity, &ranges_per_col, &self.merge_operator),
                     _ => todo!()
                 }
@@ -169,6 +171,19 @@ fn merge_sort_key_array_ranges_with_primitive<T:ArrowPrimitiveType>(capacity:usi
     for i in 0..ranges.len() {
         let ranges_pre_row = ranges[i].clone();
         let res = merge_operator.merge_primitive::<T>(&ranges_pre_row);
+        match res.is_some() {
+            true => array_data_builder.append_value(res.unwrap()),
+            false => array_data_builder.append_null()
+        }
+    }
+
+    make_arrow_array(array_data_builder.finish().into_data())
+}
+
+fn merge_sort_key_array_ranges_with_utf8<OffsetSize: OffsetSizeTrait>(capacity:usize, ranges:&Vec<Vec<SortKeyArrayRange>>, merge_operator:&MergeOperator) ->ArrayRef {
+    let mut array_data_builder = GenericStringBuilder::<OffsetSize>::with_capacity(capacity, capacity);
+    for range in ranges.iter() {
+        let res = merge_operator.merge_utf8(range);
         match res.is_some() {
             true => array_data_builder.append_value(res.unwrap()),
             false => array_data_builder.append_null()

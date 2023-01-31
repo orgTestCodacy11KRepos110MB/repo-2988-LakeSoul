@@ -4,7 +4,7 @@ use std::fmt::{Debug, Formatter};
 use arrow_buffer::ArrowNativeType;
 use arrow_schema::{DataType};
 use arrow::datatypes::ArrowPrimitiveType;
-use arrow::array::as_primitive_array;
+use arrow::array::{as_primitive_array, as_string_array};
 use arrow_array::cast::as_boolean_array;
 use datafusion::physical_plan::DisplayFormatType::Default;
 
@@ -83,14 +83,36 @@ impl MergeOperator{
         } 
     }
 
+    pub fn merge_utf8(&self, ranges: &Vec<SortKeyArrayRange>) -> Option<String> {
+        match self {
+            MergeOperator::UseLast => {
+                match ranges.last() {
+                    None => None,
+                    Some(range) => {
+                        if range.array().as_ref().is_valid(range.end_row - 1) {
+                            Some(as_string_array(range.array().as_ref()).value(range.end_row - 1).to_string())
+                        } else {
+                            None
+                        }
+                    }
+                }
+            },
+            _ => todo!()     
+        }
+    }
+
     pub fn merge_boolean(&self, ranges: &Vec<SortKeyArrayRange>) -> Option<bool> {
         match self {
             MergeOperator::UseLast => {
-                let range = ranges.last().unwrap();
-                if range.array().as_ref().is_valid(range.end_row - 1) {
-                    Some(as_boolean_array(range.array().as_ref()).value(range.end_row - 1))
-                } else {
-                    None
+                match ranges.last() {
+                    None => None,
+                    Some(range) => {
+                        if range.array().as_ref().is_valid(range.end_row - 1) {
+                            Some(as_boolean_array(range.array().as_ref()).value(range.end_row - 1))
+                        } else {
+                            None
+                        }
+                    }
                 }
             },
             _ => todo!()     
