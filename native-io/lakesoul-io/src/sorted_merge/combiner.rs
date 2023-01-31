@@ -184,14 +184,13 @@ fn merge_sort_key_array_ranges_with_primitive<T:ArrowPrimitiveType>(capacity:usi
 
 fn merge_sort_key_array_ranges_with_boolean(capacity:usize, ranges:&Vec<Vec<SortKeyArrayRange>>, merge_operator:&MergeOperator) ->ArrayRef {
     let mut array_data_builder = BooleanBuilder::with_capacity(capacity);
-    ranges.iter().map( |ranges_pre_row| {
-        let res = merge_operator.merge_boolean(ranges_pre_row);
-        if res.is_some() {
-            array_data_builder.append_value(res.unwrap());
-        } else {
-            array_data_builder.append_null();
+    for range in ranges.iter() {
+        let res = merge_operator.merge_boolean(range);
+        match res.is_some() {
+            true => array_data_builder.append_value(res.unwrap()),
+            false => array_data_builder.append_null()
         }
-    });
+    }
 
     make_arrow_array(array_data_builder.finish().into_data())
 }
@@ -296,10 +295,10 @@ mod tests {
     use crate::sorted_merge::sorted_stream_merger::{SortKeyRange};
     use crate::sorted_merge::sort_key_range::{SortKeyBatchRange, SortKeyArrayRange, SortKeyArrayRanges};
     use crate::sorted_merge::merge_operator::MergeOperator;
-    use arrow::array::{Array, ArrayRef, Int32Array, UInt16Array};
+    use arrow::array::{Array, ArrayRef, Int32Array, UInt16Array, BooleanArray, UInt32Array};
     use arrow::array::as_primitive_array;
-    use arrow::datatypes::{UInt16Type, Int32Type, ArrowPrimitiveType, ArrowNativeType};
-    use arrow::array::{Int32Builder, PrimitiveBuilder};
+    use arrow::datatypes::{UInt16Type, Int32Type, ArrowPrimitiveType, ArrowNativeType, UInt32Type};
+    use arrow::array::{Int32Builder, PrimitiveBuilder, BooleanBuilder};
     use arrow::array::{make_array as make_arrow_array};
     use arrow::record_batch::RecordBatch;
     use arrow_schema::{DataType, Field, Schema, SchemaRef};
@@ -525,6 +524,10 @@ mod tests {
             let ranges_pre_row = ranges[i].clone();
             match merge_operator {
                 MergeOperator::UseLast => {
+                    // match ranges_pre_row.last() {
+                    //     None => None,
+                    //     Some(range) => todo!()
+                    // }
                     let range = ranges_pre_row.last().unwrap();
                     if range.array().as_ref().is_valid(range.end_row) {
                         array_data_builder.append_value(as_primitive_array::<T>(range.array().as_ref()).value(range.end_row));
@@ -560,12 +563,12 @@ mod tests {
                         | DataType::Int64 => {
                             let mut res = T::default_value().to_isize().unwrap();
                             let mut is_none = true;
-                            ranges_pre_row.iter().map( |range| {
+                            for range in ranges_pre_row {
                                 if range.array().as_ref().is_valid(range.end_row) {
                                     is_none = false;
                                     res += as_primitive_array::<T>(range.array().as_ref()).value(range.end_row).to_isize().unwrap();
                                 }
-                            });
+                            }
                             if is_none {
                                 todo!()
                             } else {
@@ -579,6 +582,19 @@ mod tests {
                     }
     
                 }
+            }
+        }
+    
+        make_arrow_array(array_data_builder.finish().into_data())
+    }
+
+    fn merge_sort_key_array_ranges_with_boolean(capacity:usize, ranges:&Vec<Vec<SortKeyArrayRange>>, merge_operator:&MergeOperator) ->ArrayRef {
+        let mut array_data_builder = BooleanBuilder::with_capacity(capacity);
+        for range in ranges.iter() {
+            let res = merge_operator.merge_boolean(range);
+            match res.is_some() {
+                true => array_data_builder.append_value(res.unwrap()),
+                false => array_data_builder.append_null()
             }
         }
     
@@ -600,6 +616,8 @@ mod tests {
 
                 match data_type {
                     DataType::UInt16 => merge_sort_key_array_ranges_with_primitive::<UInt16Type>(capacity, &ranges_per_col, merge_operator),
+                    DataType::UInt32 => merge_sort_key_array_ranges_with_primitive::<UInt32Type>(capacity, &ranges_per_col, merge_operator),
+                    DataType::Boolean => merge_sort_key_array_ranges_with_boolean(capacity, &ranges_per_col, merge_operator),
                     DataType::Int32 => merge_sort_key_array_ranges_with_primitive::<Int32Type>(capacity, &ranges_per_col, &MergeOperator::UseLast),
                     _ => todo!()
                 }
@@ -698,7 +716,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_multi_streams_multi_cols_combine_and_merge() {
+    async fn test_multi_streams_with_same_schema_combine_and_merge() {
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
         let s1rb1 = create_batch_two_col_i32_uint16("id", &[1, 1, 2, 3, 3, 4],
@@ -755,7 +773,6 @@ mod tests {
                 let range = ranges[j].clone();
                 for k in 0..range.sort_key_ranges.len() {
                     let batch_range = range.sort_key_ranges[k].clone();
-                    println!("{:?}", batch_range);
                     current_sort_key_range.add_range_in_batch(batch_range);
                 }
             }
@@ -814,49 +831,7 @@ mod tests {
                 "+----+--------+",
             ]
             , &[rb]);
-        // in_progrss.push(current_sort_key_range);
 
-        let ranges = combiner.next().await.unwrap().unwrap();
-        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone());
-        for i in 0..ranges.len() {
-            let range = ranges[i].clone();
-            for i in 0..range.sort_key_ranges.len() {
-                let batch_range = range.sort_key_ranges[i].clone();
-                current_sort_key_range.add_range_in_batch(batch_range);
-            }
-            // in_progrss.push(current_sort_key_range);
-            // current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
-        }
-        in_progrss.push(current_sort_key_range);
-
-        let ranges = combiner.next().await.unwrap().unwrap();
-        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone());
-        for i in 0..ranges.len() {
-            let range = ranges[i].clone();
-            for i in 0..range.sort_key_ranges.len() {
-                let batch_range = range.sort_key_ranges[i].clone();
-                current_sort_key_range.add_range_in_batch(batch_range);
-            }
-            // in_progrss.push(current_sort_key_range);
-            // current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
-        }
-        in_progrss.push(current_sort_key_range);
-
-        let ranges = combiner.next().await.unwrap().unwrap();
-        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone());
-        for i in 0..ranges.len() {
-            let range = ranges[i].clone();
-            for i in 0..range.sort_key_ranges.len() {
-                let batch_range = range.sort_key_ranges[i].clone();
-                current_sort_key_range.add_range_in_batch(batch_range);
-            }
-            // in_progrss.push(current_sort_key_range);
-            // current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
-        }
-        in_progrss.push(current_sort_key_range);
-
-        // let rb = build_record_batch(in_progrss, schema.clone()).unwrap();
-        // print_batches(&vec![rb]);
     }
 
     #[test]

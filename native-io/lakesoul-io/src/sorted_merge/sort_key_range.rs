@@ -206,24 +206,7 @@ impl SortKeyArrayRanges {
                 .column_with_name(name)
                 .map(|(idx, feild)| self.sort_key_array_ranges[column_idx].push(range.column(idx)));
         };
-        // self
-        // .schema
-        // .fields()
-        // .iter()
-        // .enumerate()
-        // .map(|(column_idx, field)| {
-        //     let idx = range
-        //         .schema()
-        //         .column_with_name(field.name())
-        //         .unwrap()
-        //         .0;
-        //     self.sort_key_ranges[column_idx].push(range.column(idx));
-        // });
     }
-
-    // pub fn current(&self) -> Row<'_> {
-    //     self.batch_range.unwrap().current()
-    // }
 
     pub fn is_empty(&self) -> bool{
         self.batch_range.is_none()
