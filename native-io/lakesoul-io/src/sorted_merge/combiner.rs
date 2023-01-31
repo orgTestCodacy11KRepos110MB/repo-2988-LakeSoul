@@ -109,7 +109,6 @@ impl MinHeapSortKeyBatchRangeCombiner{
                     if self.current_sort_key_range.match_row(&range) {
                         self.current_sort_key_range.add_range_in_batch(range.clone());
                     } else {
-                        println!("pushing in_progress {:?}, {:?}", self.current_sort_key_range, range);
                         self.in_progress.push(self.current_sort_key_range.clone());
                         self.current_sort_key_range = SortKeyArrayRanges::new(self.schema.clone());
                         self.current_sort_key_range.add_range_in_batch(range.clone());
@@ -141,12 +140,6 @@ impl MinHeapSortKeyBatchRangeCombiner{
             .enumerate()
             .map(|(column_idx, field)| {
                 let capacity = self.in_progress.len();
-                // let mut array_data = MergedArrayData::new(&field, batch_size);
-                
-                // if self.in_progress.is_empty() {
-                //     return make_arrow_array(array_data.freeze());
-                // }
-
                 let data_type = (*field.data_type()).clone();
                 let ranges_per_col:Vec<Vec<SortKeyArrayRange>> = self.in_progress
                     .iter()
@@ -551,6 +544,7 @@ mod tests {
                             let mut is_none = true;
                             for i in 0..ranges_pre_row.len() {
                                 let range = ranges_pre_row[i].clone();
+                                if i < ranges_pre_row.len() - 1 && range.stream_idx == ranges_pre_row[i + 1].stream_idx { continue; }
                                 if range.array().as_ref().is_valid(range.end_row) {
                                     is_none = false;
                                     res += as_primitive_array::<T>(range.array().as_ref()).value(range.end_row).as_usize();
@@ -591,7 +585,7 @@ mod tests {
         make_arrow_array(array_data_builder.finish().into_data())
     }
 
-    fn build_record_batch(in_progress: Vec<SortKeyArrayRanges>, schema: SchemaRef) -> ArrowResult<RecordBatch> {
+    fn build_record_batch(in_progress: &Vec<SortKeyArrayRanges>, schema: SchemaRef, merge_operator: &MergeOperator) -> ArrowResult<RecordBatch> {
         let columns = schema
             .fields()
             .iter()
@@ -605,7 +599,7 @@ mod tests {
                     .collect::<Vec<_>>();
 
                 match data_type {
-                    DataType::UInt16 => merge_sort_key_array_ranges_with_primitive::<UInt16Type>(capacity, &ranges_per_col, &MergeOperator::Sum),
+                    DataType::UInt16 => merge_sort_key_array_ranges_with_primitive::<UInt16Type>(capacity, &ranges_per_col, merge_operator),
                     DataType::Int32 => merge_sort_key_array_ranges_with_primitive::<Int32Type>(capacity, &ranges_per_col, &MergeOperator::UseLast),
                     _ => todo!()
                 }
@@ -707,18 +701,22 @@ mod tests {
     async fn test_multi_streams_multi_cols_combine_and_merge() {
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
-        let rb1 = create_batch_two_col_i32_uint16("id", &[1, 1, 3, 3, 4],
-            "salary", vec![Some(1u16), None, Some(2u16), Some(4u16), None]);
-        let rb2 = create_batch_two_col_i32_uint16("id", &[1, 1, 1, 2, 3, 3, 4],
-            "salary", vec![None, Some(1u16), Some(3u16), Some(7u16), Some(4u16), None, Some(8u16)]);
-        let rb3 = create_batch_two_col_i32_uint16("id", &[0, 1, 2, 3, 3, 4, 4, 5],
-            "salary", vec![None, Some(6u16), Some(3u16), Some(5u16), Some(6u16), None, None, Some(7u16)]);
-        // print_batches(&[rb1.clone()]);
-        // print_batches(&[rb2.clone()]);
-        // print_batches(&[rb3.clone()]);
+        let s1rb1 = create_batch_two_col_i32_uint16("id", &[1, 1, 2, 3, 3, 4],
+            "salary", vec![Some(1u16), None, Some(2), Some(2u16), Some(4u16), None]);
+        let s1rb2 = create_batch_two_col_i32_uint16("id", &[4, 5, 6, 6, 7, 9],
+            "salary", vec![Some(4u16), None, Some(6u16), Some(4u16), None, Some(9)]);
+        let s2rb1 = create_batch_two_col_i32_uint16("id", &[1, 1, 1, 2, 3, 3, 4],
+            "salary", vec![None, Some(1u16), Some(3u16), None, Some(4u16), None, Some(8u16)]);
+        let s2rb2 = create_batch_two_col_i32_uint16("id", &[4, 4, 5, 6, 8, 8],
+            "salary", vec![Some(5u16), Some(2u16), Some(3u16), Some(7u16), None, Some(8u16)]);
+        let s3rb1 = create_batch_two_col_i32_uint16("id", &[0, 1, 3, 3, 4, 4, 5],
+            "salary", vec![None, Some(6u16), Some(5u16), Some(6u16), None, None, Some(7u16)]);
+        let s3rb2 = create_batch_two_col_i32_uint16("id", &[5, 7, 8],
+            "salary", vec![None, Some(2u16), None]);
+
         let s1fetcher = create_stream_fetcher(
             0,
-            vec![rb1.clone()],
+            vec![s1rb1.clone(), s1rb2.clone()],
             task_ctx.clone(),
             vec!["id"],
         )
@@ -726,7 +724,7 @@ mod tests {
         unwrap();
         let s2fetcher = create_stream_fetcher(
             1,
-            vec![rb2.clone()],
+            vec![s2rb1.clone(), s2rb2.clone()],
             task_ctx.clone(),
             vec!["id"],
         )
@@ -734,9 +732,7 @@ mod tests {
         .unwrap();
         let s3fetcher = create_stream_fetcher(
             2,
-            vec![
-                rb3.clone()
-            ],
+            vec![s3rb1.clone(), s3rb2.clone()],
             task_ctx.clone(),
             vec!["id"],
         )
@@ -747,46 +743,78 @@ mod tests {
             s1fetcher, s2fetcher, s3fetcher,
         ]);
         combiner.init().await.unwrap();
-        // println!("{}", combiner.heap.len());
 
         let field_a = Field::new("id", DataType::Int32, false);
         let field_b = Field::new("salary", DataType::UInt16, true);
         let schema = Arc::new(Schema::new(vec![field_a, field_b]));
-        println!("{:?}", schema);
-        let ranges = combiner.next().await.unwrap().unwrap();
-        // println!("{:?}", ranges[0].clone().sort_key_ranges);
         let mut in_progrss: Vec<SortKeyArrayRanges> = vec![];
-        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone());
-        // for i in 0..6 {
-        //     let ranges = combiner.next().await.unwrap().unwrap();
-        //     let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
-        //     for j in 0..ranges.len() {
-        //         let range = ranges[i].clone();
-        //         // println!("{:?}", range);
-        //         // println!("{}", range.sort_key_ranges.len());
-        //         for k in 0..range.sort_key_ranges.len() {
-        //             let batch_range = range.sort_key_ranges[k].clone();
-        //             println!("{:?}", batch_range);
-        //             current_sort_key_range.add_range_in_batch(batch_range);
-        //         }
-        //         // in_progrss.push(current_sort_key_range);
-        //         // current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
-        //     }
-        // }
-        for range in ranges.iter() {
-            // println!("{}", ranges[i].sort_key_ranges.len());
-            // let range = ranges[i].clone();
-            // println!("{:?}", range);
-            // println!("{}", range.sort_key_ranges.len());
-            for i in 0..range.sort_key_ranges.len() {
-                let batch_range = range.sort_key_ranges[i].clone();
-                println!("{:?}", batch_range);
-                current_sort_key_range.add_range_in_batch(batch_range);
+        for i in 0..10 {
+            let ranges = combiner.next().await.unwrap().unwrap();
+            let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone());
+            for j in 0..ranges.len() {
+                let range = ranges[j].clone();
+                for k in 0..range.sort_key_ranges.len() {
+                    let batch_range = range.sort_key_ranges[k].clone();
+                    println!("{:?}", batch_range);
+                    current_sort_key_range.add_range_in_batch(batch_range);
+                }
             }
-            // in_progrss.push(current_sort_key_range);
-            // current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+            in_progrss.push(current_sort_key_range);
+
         }
-        in_progrss.push(current_sort_key_range);
+        let ranges = combiner.next().await.unwrap();
+        assert!(ranges.is_none());
+
+        // The order of SortKeyRange is as follows:
+        // {[0], [None]} from s3
+        // {[1, 1], [1, None]} from s1, {[1, 1, 1], [None, 1, 3]} from s2, {[1], [6]} from s3
+        // {[2], [2]} from s1, {[2], [None]} from s2
+        // {[3, 3], [2, 4]} from s1, {[3, 3], [4, None]} from s2, {[3, 3], [5, 6]} from s3
+        // {[4, 4], [None, 4]} from s1, {[4, 4, 4], [8, 5, 2]} from s2, {[4, 4], [None, None]} from s3
+        // {[5], [None]} from s1, {[5], [3]} from s2, {[5, 5], [7, None]} from s3
+        // {[6, 6], [6, 4]} from s1, {[6], [7]} from s2
+        // {[7], [None]} from s1, {[7], [2]} from s3
+        // {[8, 8], [None, 8]} from s2, {[8], [None]} from s3
+        // {[9], [9]} from s1
+        let rb = build_record_batch(&in_progrss, schema.clone(), &MergeOperator::UseLast).unwrap();
+        assert_batches_eq!(
+            &[
+                "+----+--------+",
+                "| id | salary |",
+                "+----+--------+",
+                "| 0  |        |",
+                "| 1  | 6      |",
+                "| 2  |        |",
+                "| 3  | 6      |",
+                "| 4  |        |",
+                "| 5  |        |",
+                "| 6  | 7      |",
+                "| 7  | 2      |",
+                "| 8  |        |",
+                "| 9  | 9      |",
+                "+----+--------+",
+            ]
+            , &[rb]);
+        let rb = build_record_batch(&in_progrss, schema.clone(), &MergeOperator::Sum).unwrap();
+        assert_batches_eq!(
+            &[
+                "+----+--------+",
+                "| id | salary |",
+                "+----+--------+",
+                "| 0  |        |",
+                "| 1  | 9      |",
+                "| 2  | 2      |",
+                "| 3  | 10     |",
+                "| 4  | 6      |",
+                "| 5  | 3      |",
+                "| 6  | 11     |",
+                "| 7  | 2      |",
+                "| 8  | 8      |",
+                "| 9  | 9      |",
+                "+----+--------+",
+            ]
+            , &[rb]);
+        // in_progrss.push(current_sort_key_range);
 
         let ranges = combiner.next().await.unwrap().unwrap();
         let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone());
@@ -827,34 +855,8 @@ mod tests {
         }
         in_progrss.push(current_sort_key_range);
 
-        let ranges = combiner.next().await.unwrap().unwrap();
-        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone());
-        for i in 0..ranges.len() {
-            let range = ranges[i].clone();
-            for i in 0..range.sort_key_ranges.len() {
-                let batch_range = range.sort_key_ranges[i].clone();
-                current_sort_key_range.add_range_in_batch(batch_range);
-            }
-            // in_progrss.push(current_sort_key_range);
-            // current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
-        }
-        in_progrss.push(current_sort_key_range);
-
-        let ranges = combiner.next().await.unwrap().unwrap();
-        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone());
-        for i in 0..ranges.len() {
-            let range = ranges[i].clone();
-            for i in 0..range.sort_key_ranges.len() {
-                let batch_range = range.sort_key_ranges[i].clone();
-                current_sort_key_range.add_range_in_batch(batch_range);
-            }
-            // in_progrss.push(current_sort_key_range);
-            // current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
-        }
-        in_progrss.push(current_sort_key_range);
-
-        let rb = build_record_batch(in_progrss, schema.clone()).unwrap();
-        print_batches(&vec![rb]);
+        // let rb = build_record_batch(in_progrss, schema.clone()).unwrap();
+        // print_batches(&vec![rb]);
     }
 
     #[test]
