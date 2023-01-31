@@ -62,6 +62,7 @@ impl RangeCombiner {
 
 #[derive(Debug)]
 pub enum RangeCombinerResult {
+    None,
     Err(ArrowError),
     Range(Reverse<SortKeyBatchRange>),
     RecordBatch(ArrowResult<RecordBatch>),
@@ -82,7 +83,7 @@ impl MinHeapSortKeyBatchRangeCombiner{
         schema: SchemaRef,
         streams_num: usize, 
         target_batch_size: usize) -> Self {
-        let new_range = SortKeyArrayRanges::new(schema.clone(), None);
+        let new_range = SortKeyArrayRanges::new(schema.clone());
         MinHeapSortKeyBatchRangeCombiner{
             schema: schema.clone(),
             heap: BinaryHeap::with_capacity(streams_num),
@@ -108,23 +109,31 @@ impl MinHeapSortKeyBatchRangeCombiner{
                     if self.current_sort_key_range.match_row(&range) {
                         self.current_sort_key_range.add_range_in_batch(range.clone());
                     } else {
+                        println!("pushing in_progress {:?}, {:?}", self.current_sort_key_range, range);
                         self.in_progress.push(self.current_sort_key_range.clone());
-                        self.current_sort_key_range = SortKeyArrayRanges::new(self.schema.clone(), Some(range.rows.clone()));
+                        self.current_sort_key_range = SortKeyArrayRanges::new(self.schema.clone());
                         self.current_sort_key_range.add_range_in_batch(range.clone());
                     }
                     RangeCombinerResult::Range(Reverse(range)) 
                 }
                 None => {
-                    self.in_progress.push(self.current_sort_key_range.clone());
-                    println!("heap is exhausted");
-                    RangeCombinerResult::RecordBatch(self.build_record_batch())
+                    if self.current_sort_key_range.is_empty() && self.in_progress.is_empty() {
+                        RangeCombinerResult::None
+                    } else {
+                        if !self.current_sort_key_range.is_empty() {
+                            self.in_progress.push(self.current_sort_key_range.clone());
+                            self.current_sort_key_range.set_batch_range(None);
+                        }
+                        println!("heap is exhausted");
+                        RangeCombinerResult::RecordBatch(self.build_record_batch())
+                    }
                 }
             }
         }
     }
  
     fn build_record_batch(&mut self) -> ArrowResult<RecordBatch> {
-        // println!("build_record_batch {:?}", self.in_progress);
+        println!("build_record_batch {:?}", self.in_progress);
         let columns = self
             .schema
             .fields()
@@ -747,7 +756,7 @@ mod tests {
         let ranges = combiner.next().await.unwrap().unwrap();
         // println!("{:?}", ranges[0].clone().sort_key_ranges);
         let mut in_progrss: Vec<SortKeyArrayRanges> = vec![];
-        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone());
         // for i in 0..6 {
         //     let ranges = combiner.next().await.unwrap().unwrap();
         //     let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
@@ -780,7 +789,7 @@ mod tests {
         in_progrss.push(current_sort_key_range);
 
         let ranges = combiner.next().await.unwrap().unwrap();
-        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone());
         for i in 0..ranges.len() {
             let range = ranges[i].clone();
             for i in 0..range.sort_key_ranges.len() {
@@ -793,7 +802,7 @@ mod tests {
         in_progrss.push(current_sort_key_range);
 
         let ranges = combiner.next().await.unwrap().unwrap();
-        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone());
         for i in 0..ranges.len() {
             let range = ranges[i].clone();
             for i in 0..range.sort_key_ranges.len() {
@@ -806,7 +815,7 @@ mod tests {
         in_progrss.push(current_sort_key_range);
 
         let ranges = combiner.next().await.unwrap().unwrap();
-        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone());
         for i in 0..ranges.len() {
             let range = ranges[i].clone();
             for i in 0..range.sort_key_ranges.len() {
@@ -819,7 +828,7 @@ mod tests {
         in_progrss.push(current_sort_key_range);
 
         let ranges = combiner.next().await.unwrap().unwrap();
-        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone());
         for i in 0..ranges.len() {
             let range = ranges[i].clone();
             for i in 0..range.sort_key_ranges.len() {
@@ -832,7 +841,7 @@ mod tests {
         in_progrss.push(current_sort_key_range);
 
         let ranges = combiner.next().await.unwrap().unwrap();
-        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone(), None);
+        let mut current_sort_key_range = SortKeyArrayRanges::new(schema.clone());
         for i in 0..ranges.len() {
             let range = ranges[i].clone();
             for i in 0..range.sort_key_ranges.len() {

@@ -168,34 +168,19 @@ impl Clone for SortKeyArrayRange {
 // This is the unit to be sorted in min heap
 #[derive(Debug)]
 pub struct SortKeyArrayRanges {
-    // use small vector to avoid allocation on every row
-    pub(crate) sort_key_ranges: Vec<Vec<SortKeyArrayRange>>,
+    pub(crate) sort_key_array_ranges: Vec<Vec<SortKeyArrayRange>>,
 
     pub(crate) schema: SchemaRef,
 
-    pub(crate) rows: Option<Arc<Rows>>,
+    pub(crate) batch_range: Option<SortKeyBatchRange>,
 }
 
 impl SortKeyArrayRanges {
-    pub fn new(schema: SchemaRef, rows: Option<Arc<Rows>>) -> SortKeyArrayRanges {
+    pub fn new(schema: SchemaRef) -> SortKeyArrayRanges {
         SortKeyArrayRanges {
-            sort_key_ranges: (0..schema.fields().len()).map(|_| vec![]).collect(),
+            sort_key_array_ranges: (0..schema.fields().len()).map(|_| vec![]).collect(),
             schema: schema.clone(),
-            rows: match rows {
-                None => None,
-                Some(rows) => Some(rows.clone()),
-            },
-        }
-    }
-
-    pub fn new_with_ranges(schema: SchemaRef, rows: Option<Arc<Rows>>, ranges:Vec<Vec<SortKeyArrayRange>>) -> SortKeyArrayRanges {
-        SortKeyArrayRanges {
-            sort_key_ranges: ranges.clone(),
-            schema: schema.clone(),
-            rows: match rows {
-                None => None,
-                Some(rows) => Some(rows.clone()),
-            },
+            batch_range: None,
         }
     }
 
@@ -205,11 +190,13 @@ impl SortKeyArrayRanges {
     }
 
     pub fn column(&self, column_idx: usize) -> Vec<SortKeyArrayRange> {
-        self.sort_key_ranges[column_idx].clone()
+        self.sort_key_array_ranges[column_idx].clone()
     }
 
     pub fn add_range_in_batch(&mut self, range: SortKeyBatchRange) {
-        self.rows = Some(range.rows.clone());
+        if self.is_empty() {
+            self.set_batch_range(Some(range.clone()));
+        }
         let schema = self.schema();
         for column_idx in 0..schema.fields().len() {
             let name = schema.field(column_idx).name();
@@ -217,7 +204,7 @@ impl SortKeyArrayRanges {
             range
                 .schema()
                 .column_with_name(name)
-                .map(|(idx, feild)| self.sort_key_ranges[column_idx].push(range.column(idx)));
+                .map(|(idx, feild)| self.sort_key_array_ranges[column_idx].push(range.column(idx)));
         };
         // self
         // .schema
@@ -234,15 +221,26 @@ impl SortKeyArrayRanges {
         // });
     }
 
-    pub fn current(&self) -> Row<'_> {
-        self.rows.as_ref().unwrap().row(self.sort_key_ranges[0][0].begin_row)
+    // pub fn current(&self) -> Row<'_> {
+    //     self.batch_range.unwrap().current()
+    // }
+
+    pub fn is_empty(&self) -> bool{
+        self.batch_range.is_none()
+    }
+
+    pub fn set_batch_range(&mut self, batch_range: Option<SortKeyBatchRange>) {
+        self.batch_range = match batch_range {
+            None => None,
+            Some(batch_range) => Some(batch_range.clone()),
+        }
     }
 
     pub fn match_row(&self, range: &SortKeyBatchRange) -> bool {
         // println!("match_row:\n {:?}\n {:?}", self, range);
-        match &self.rows {
+        match &self.batch_range {
             None => true,
-            Some(rows) => rows.row(0) == range.current()
+            Some(batch_range) => batch_range.current() == range.current()
         }
     }
 
@@ -250,10 +248,13 @@ impl SortKeyArrayRanges {
 
 impl Clone for SortKeyArrayRanges {
     fn clone(&self) -> Self {
-        SortKeyArrayRanges::new_with_ranges(
-            self.schema.clone(), 
-            Some(self.rows.as_ref().unwrap().clone()),
-            self.sort_key_ranges.clone(),
-        )
+        SortKeyArrayRanges {
+            sort_key_array_ranges: self.sort_key_array_ranges.clone(),
+            schema: self.schema.clone(),
+            batch_range: match &self.batch_range {
+                None => None,
+                Some(batch_range) => Some(batch_range.clone()),
+            },
+        }
     }
 }

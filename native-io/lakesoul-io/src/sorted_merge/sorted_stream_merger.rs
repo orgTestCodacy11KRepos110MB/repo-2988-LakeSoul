@@ -349,7 +349,6 @@ impl SortedStreamMerger
         }
         let mut empty_batch = false;
         {
-            // println!("maybe_poll_stream {:?}", self);
             let stream = &mut self.streams.streams[idx];
             if stream.is_terminated() {
                 return Poll::Ready(Ok(()));
@@ -362,7 +361,6 @@ impl SortedStreamMerger
                     return Poll::Ready(Err(e));
                 }
                 Some(Ok(batch)) => {
-                    // println!("maybe_poll_stream::match futures::ready! {:?}", batch);
                     if batch.num_rows() > 0 {
                         let cols = self
                             .column_expressions
@@ -397,7 +395,6 @@ impl SortedStreamMerger
         }
 
         if empty_batch {
-            // println!("maybe_poll_stream::empty_batch {:?}", self);
             self.maybe_poll_stream(cx, idx)
         } else {
             Poll::Ready(Ok(()))
@@ -428,13 +425,12 @@ impl SortedStreamMerger
                 }
             }
         }
-        // println!("poll_next_inner: after poll all streams {:?}", self);
         
         // refer by https://docs.rs/datafusion/13.0.0/src/datafusion/physical_plan/sorts/sort_preserving_merge.rs.html#567-608
         loop {
-            // println!("poll_next_inner {:?}", self);
             match self.range_combiner.poll_result() {
                 RangeCombinerResult::Err(e) => return Poll::Ready(Some(Err(e))),
+                RangeCombinerResult::None => return Poll::Ready(None),
                 RangeCombinerResult::Range(Reverse(mut range)) => {
                     let stream_idx = range.stream_idx();
                     let batch = Arc::new(self.batches[stream_idx].back().unwrap());
@@ -456,7 +452,7 @@ impl SortedStreamMerger
                     }
                 },                
                 RangeCombinerResult::RecordBatch(batch) => {
-                    println!("{:?}", batch);
+                    println!("batch is ready: {:?}", batch);
                      return Poll::Ready(Some(batch))
                 }
                     
@@ -500,6 +496,7 @@ mod tests {
     use arrow::record_batch::RecordBatch;
     use arrow::array::Int32Array;
     use arrow::array::ArrayRef;
+    use arrow::util::pretty::print_batches;
 
     use datafusion::error::Result;
     use datafusion::from_slice::FromSlice;
@@ -678,6 +675,6 @@ mod tests {
             &sort_exprs, 
             2).unwrap();
         let merged = common::collect(Box::pin(merge_stream)).await.unwrap();
-
+        print_batches(&merged);
     }
 }
