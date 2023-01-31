@@ -438,6 +438,7 @@ impl RecordBatchStream for SortedStreamMerger {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::ops::Index;
     use std::collections::BTreeMap;
 
     use futures::stream::Fuse;
@@ -450,15 +451,22 @@ mod tests {
     use arrow::array::Int32Array;
     use arrow::array::ArrayRef;
     use arrow::util::pretty::print_batches;
+    use arrow::util::display::array_value_to_string;
+    use arrow::array::as_primitive_array;
+    use arrow::datatypes::Int64Type;
 
     use datafusion::error::Result;
     use datafusion::from_slice::FromSlice;
-    use datafusion::prelude::SessionContext;
+    use datafusion::prelude::{SessionContext, SessionConfig};
     use datafusion::execution::context::TaskContext;
     use datafusion::physical_expr::PhysicalSortExpr;    
     use datafusion::physical_plan::expressions::col;
+    use datafusion::logical_plan::col as logical_col;
     use datafusion::assert_batches_eq;
     use datafusion::physical_plan::{SendableRecordBatchStream, memory::MemoryExec, ExecutionPlan, common};
+
+    use comfy_table::{Cell, Table};
+
 
 
     use crate::sorted_merge::sorted_stream_merger::{SortedStream, SortedStreamMerger};
@@ -467,9 +475,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_multi_file_merger() {
-        let session_ctx = SessionContext::new();
+        let session_config = SessionConfig::default().with_batch_size(32);
+        let session_ctx = SessionContext::with_config(session_config);
         let task_ctx = session_ctx.task_ctx();
         let files:Vec<String> = vec![
+            "/Users/ceng/PycharmProjects/write_parquet/small_0.parquet".to_string(),
             "/Users/ceng/PycharmProjects/write_parquet/small_1.parquet".to_string(),
             "/Users/ceng/PycharmProjects/write_parquet/small_2.parquet".to_string(),
         ];
@@ -478,6 +488,8 @@ mod tests {
             let mut stream = session_ctx
                 .read_parquet(files[i].as_str(), Default::default())
                 .await
+                .unwrap()
+                .sort(vec![logical_col("int0").sort(true, true)])
                 .unwrap()
                 .execute_stream()
                 .await
@@ -500,26 +512,87 @@ mod tests {
             sort.as_slice(),
             1024,
         ).unwrap();
+        let merged_result = common::collect(Box::pin(merge_stream)).await.unwrap();
 
+        let mut all_rb = Vec::new();
+        for i in 0..files.len() {
+            let mut stream = session_ctx
+                .read_parquet(files[i].as_str(), Default::default())
+                .await
+                .unwrap()
+                .sort(vec![logical_col("int0").sort(true, true)])
+                .unwrap()
+                .execute_stream()
+                .await
+                .unwrap();
+            let rb = common::collect(stream).await.unwrap();
+            print_batches(&rb.clone());
+            all_rb.extend(rb);
+        }
+
+
+        let expected_table = merge_with_use_last(&all_rb).unwrap();
+        let expected_lines = expected_table.lines()
+            .map(|line| String::from(line.trim_end()))
+            .collect::<Vec<_>>();
+
+        let formatted = arrow::util::pretty::pretty_format_batches(&merged_result)
+            .unwrap()
+            .to_string();
+
+        let actual_lines: Vec<&str> = formatted.trim().lines().collect();
+        assert_eq!(
+            expected_lines, actual_lines,
+            "\n\nexpected:\n\n{:#?}\nactual:\n\n{:#?}\n\n",
+            expected_lines, actual_lines
+        );
+    
+    }
+
+    ///! merge a series of record batches into a table using use_last
+    fn merge_with_use_last(results: &[RecordBatch]) -> Result<Table> {
+        let mut table = Table::new();
+        table.load_preset("||--+-++|    ++++++");
+
+        if results.is_empty() {
+            return Ok(table);
+        }
+
+        let schema = results[0].schema();
+
+        let mut header = Vec::new();
+        for field in schema.fields() {
+            header.push(Cell::new(field.name()));
+        }
+        table.set_header(header);
+        
+        let mut rows = Vec::new();
+        for batch in results {
+            for row in 0..batch.num_rows() {
+                let mut cells = Vec::new();
+                for col in 0..batch.num_columns() {
+                    let column = batch.column(col);
+                    let arr = as_primitive_array::<Int64Type>(column);
+                    cells.push(arr.value(row));
+                }
+                rows.push(cells);
+                // table.add_row(cells);
+            }
+        }
+
+        rows.sort_by_key(|k| k[0]);
+
+        for row_idx in  0..rows.len() {
+            if row_idx == rows.len() - 1 || rows.index(row_idx)[0] != rows.index(row_idx + 1)[0]{
+                table.add_row(rows.index(row_idx));
+            }
+        }
+
+        Ok(table)
     }
 
     pub fn get_test_file_schema() -> SchemaRef {
         let schema = Schema::new(vec![
-            Field::new("str0", DataType::Utf8, false),
-            Field::new("str1", DataType::Utf8, false),
-            Field::new("str2", DataType::Utf8, false),
-            Field::new("str3", DataType::Utf8, false),
-            Field::new("str4", DataType::Utf8, false),
-            Field::new("str5", DataType::Utf8, false),
-            Field::new("str6", DataType::Utf8, false),
-            Field::new("str7", DataType::Utf8, false),
-            Field::new("str8", DataType::Utf8, false),
-            Field::new("str9", DataType::Utf8, false),
-            Field::new("str10", DataType::Utf8, false),
-            Field::new("str11", DataType::Utf8, false),
-            Field::new("str12", DataType::Utf8, false),
-            Field::new("str13", DataType::Utf8, false),
-            Field::new("str14", DataType::Utf8, false),
             Field::new("int0", DataType::Int64, false),
             Field::new("int1", DataType::Int64, false),
             Field::new("int2", DataType::Int64, false),
