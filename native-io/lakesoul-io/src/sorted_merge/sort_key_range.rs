@@ -10,7 +10,7 @@ use arrow::{
     array::ArrayRef,
 };
 
-// A range in one record batch with same primary key
+// A range in one record_batch with same primary key
 pub struct SortKeyBatchRange {
     pub(crate) begin_row: usize, // begin row in this batch, included
     pub(crate) end_row: usize,   // not included
@@ -74,7 +74,6 @@ impl SortKeyBatchRange {
         // t
         let current = self.clone();
         self.begin_row = self.end_row;
-        // println!("advance {:?}", self);
         if !self.is_finished() {
             while self.end_row < self.rows.num_rows() {
                 // check if next row in this batch has same sort key
@@ -220,7 +219,6 @@ impl SortKeyArrayRanges {
     }
 
     pub fn match_row(&self, range: &SortKeyBatchRange) -> bool {
-        // println!("match_row:\n {:?}\n {:?}", self, range);
         match &self.batch_range {
             None => true,
             Some(batch_range) => batch_range.current() == range.current()

@@ -99,9 +99,7 @@ impl MinHeapSortKeyBatchRangeCombiner{
     }
 
     pub fn poll_result(&mut self) -> RangeCombinerResult  {
-        // println!("poll_result {:?}", self.current_sort_key_range);
         if self.in_progress.len() == self.target_batch_size {
-            println!("in_progress has enough ranges ");
             RangeCombinerResult::RecordBatch(self.build_record_batch())
         } else {
             match self.heap.pop() {
@@ -123,7 +121,6 @@ impl MinHeapSortKeyBatchRangeCombiner{
                             self.in_progress.push(self.current_sort_key_range.clone());
                             self.current_sort_key_range.set_batch_range(None);
                         }
-                        println!("heap is exhausted");
                         RangeCombinerResult::RecordBatch(self.build_record_batch())
                     }
                 }
@@ -132,7 +129,6 @@ impl MinHeapSortKeyBatchRangeCombiner{
     }
  
     fn build_record_batch(&mut self) -> ArrowResult<RecordBatch> {
-        println!("build_record_batch {:?}", self.in_progress);
         let columns = self
             .schema
             .fields()

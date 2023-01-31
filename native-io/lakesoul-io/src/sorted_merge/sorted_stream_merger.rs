@@ -288,47 +288,6 @@ impl SortedStreamMerger
         })
     }
 
-    // fetch batches from all stream concurrently
-    // used in initializing merger
-    // after initialization, each stream would be prefetched(buffered)
-    async fn init(&mut self) -> Result<()> {
-        // self.range_combiner.init().await
-        Ok(())
-    }
-
-    // async fn maybe_merge_waiting_ranges(&mut self, new_range: SmallVec<[SortKeyRange; 4]>) -> Option<RecordBatch> {
-    //     self.waiting_ranges_to_merge.push(new_range);
-    //     if self.waiting_ranges_to_merge.len() >= self.batch_size {
-    //         // execute merge for currently collected ranges
-    //     }
-    //     None
-    // }
-
-    // pub async fn get_stream(&mut self) -> ArrowResult<SendableRecordBatchStream> {
-    //     self.init().await?;
-
-    //     let schema = self.schema.clone();
-    //     // let stream = try_stream! {
-    //     loop {
-    //         let ranges_opt = self.range_combiner.next().await?;
-    //         if let Some(ranges) = ranges_opt {
-    //             match self.maybe_merge_waiting_ranges(ranges).await {
-    //                 Some(rb) => {
-    //                     println!("{:?}", rb);
-    //                     break;
-    //                 }
-    //                 None => continue,
-    //             };
-    //         } else {
-    //             break;
-    //         }
-    //     }
-    //     // };
-    //     // Ok(Box::pin(MergedStream::new(schema.clone(), stream)))
-    //     Err(DivideByZero)
-    // }
-
-
     /// If the stream at the given index is not exhausted, and the last cursor for the
     /// stream is finished, poll the stream for the next RecordBatch and create a new
     /// cursor for the stream from the returned result
@@ -400,6 +359,7 @@ impl SortedStreamMerger
 
 impl SortedStreamMerger
 {
+    #[inline]
     fn poll_next_inner(
         self: &mut Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -428,7 +388,7 @@ impl SortedStreamMerger
                 RangeCombinerResult::Range(Reverse(mut range)) => {
                     let stream_idx = range.stream_idx();
                     let batch = Arc::new(self.batches[stream_idx].back().unwrap());
-                    let current_range = range.advance();
+                    let next_range = range.advance();
 
                     let mut window_finished = false;
                     if !range.is_finished() {
@@ -446,7 +406,6 @@ impl SortedStreamMerger
                     }
                 },                
                 RangeCombinerResult::RecordBatch(batch) => {
-                    println!("batch is ready: {:?}", batch);
                      return Poll::Ready(Some(batch))
                 }
                     
@@ -604,8 +563,7 @@ mod tests {
                 options: Default::default(),
             })
             .collect();
-        let batches = [batches];
-        let exec = MemoryExec::try_new(&batches, schema.clone(), None).unwrap();
+        let exec = MemoryExec::try_new(&[batches], schema.clone(), None).unwrap();
         let stream = exec.execute(0, context.clone()).unwrap();
         Ok(SortedStream::new(stream))
         // NonUniqueSortKeyRangeFetcher::new(stream_idx, fused, &sort_exprs, schema)
