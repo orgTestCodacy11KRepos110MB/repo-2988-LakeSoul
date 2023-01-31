@@ -15,7 +15,6 @@
  */
 #![feature(new_uninit)]
 #![feature(get_mut_unchecked)]
-#![feature(is_some_with)]
 #![feature(async_closure)]
 #![feature(let_chains)]
 

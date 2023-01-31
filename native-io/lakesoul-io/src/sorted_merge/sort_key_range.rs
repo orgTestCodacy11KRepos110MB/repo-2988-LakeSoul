@@ -57,13 +57,11 @@ impl SortKeyBatchRange {
         self.stream_idx
     }
 
-
     #[inline(always)]
     /// Return true if the stream is finished
     pub fn is_finished(&self) -> bool {
         self.begin_row >= self.rows.num_rows()
     }
-
 
     #[inline(always)]
     /// Returns the cursor's current row, and advances the cursor to the next row
@@ -161,7 +159,6 @@ impl Clone for SortKeyArrayRange {
         }
     }
 }
-
 
 // Multiple ranges in consecutive batches of ONE stream with same primary key
 // This is the unit to be sorted in min heap

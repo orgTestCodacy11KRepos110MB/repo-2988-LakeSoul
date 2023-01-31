@@ -7,18 +7,12 @@ use std::task::{Context, Poll};
 use std::cmp::Reverse;
 use std::collections::VecDeque;
 
-
-use crate::sorted_merge::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
 use crate::sorted_merge::combiner::{RangeCombiner, RangeCombinerResult};
-use crate::sorted_merge::fetcher::{RangeFetcher, NonUniqueSortKeyRangeFetcher};
 use crate::sorted_merge::sort_key_range::SortKeyBatchRange;
 
 use arrow::error::ArrowError;
-use arrow::error::ArrowError::DivideByZero;
 use arrow::row::{Row, Rows, RowConverter, SortField};
 use arrow::{error::Result as ArrowResult, record_batch::RecordBatch};
-
-use async_stream::try_stream;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::Result;
 use datafusion::physical_expr::{PhysicalSortExpr, PhysicalExpr};
@@ -155,34 +149,6 @@ impl MergingStreams {
     }
 }
 
-struct MergingRangeFetchers {
-    /// The sorted input streams to merge together
-    fetchers: Vec<RangeFetcher>,
-    /// number of streams
-    num_fetchers: usize,
-}
-
-impl Debug for MergingRangeFetchers {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MergingRangeFetchers")
-            .field("num_fetchers", &self.num_fetchers)
-            .finish()
-    }
-}
-
-impl MergingRangeFetchers {
-    fn new(input_fetchers: Vec<RangeFetcher>) -> Self {
-        Self {
-            num_fetchers: input_fetchers.len(),
-            fetchers: input_fetchers,
-        }
-    }
-
-    fn num_fetchers(&self) -> usize {
-        self.num_fetchers
-    }
-}
-
 pin_project! {
     pub struct MergedStream<St> {
         #[pin]
@@ -190,7 +156,6 @@ pin_project! {
         schema: SchemaRef,
     }
 }
-
 
 #[derive(Debug)]
 pub(crate) struct SortedStreamMerger
@@ -261,13 +226,6 @@ impl SortedStreamMerger
         })
         .collect::<Result<Vec<_>>>()?;
         let row_converter = RowConverter::new(sort_fields);
-
-
-        // let range_fetchers = (0..stream_count)
-        //     .into_iter()
-        //     .zip(wrappers)
-        //     .map(|(stream_idx, stream)| RangeFetcher::new(stream_idx, stream, expressions, schema.clone()))
-        //     .collect::<Result<Vec<_>>>()?;
 
         let combiner = RangeCombiner::new(schema.clone(), streams_num, batch_size);
 
@@ -433,17 +391,10 @@ impl RecordBatchStream for SortedStreamMerger {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
     use std::ops::Index;
-    use std::collections::BTreeMap;
-
-    use futures::stream::Fuse;
-    use futures::StreamExt;
-    use futures::TryStreamExt;
 
     use arrow::compute::SortOptions;
     use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -451,10 +402,8 @@ mod tests {
     use arrow::array::{Int32Array, StringArray};
     use arrow::array::ArrayRef;
     use arrow::util::pretty::print_batches;
-    use arrow::util::display::array_value_to_string;
     use arrow::array::as_primitive_array;
     use arrow::datatypes::Int64Type;
-
     use datafusion::error::Result;
     use datafusion::from_slice::FromSlice;
     use datafusion::prelude::{SessionContext, SessionConfig};
@@ -467,11 +416,7 @@ mod tests {
 
     use comfy_table::{Cell, Table};
 
-
-
     use crate::sorted_merge::sorted_stream_merger::{SortedStream, SortedStreamMerger};
-    use crate::sorted_merge::combiner::MinHeapSortKeyRangeCombiner;
-    use crate::sorted_merge::fetcher::NonUniqueSortKeyRangeFetcher;
 
     #[tokio::test]
     async fn test_multi_file_merger() {
@@ -613,9 +558,6 @@ mod tests {
     
         Arc::new(schema)
     }
-
-    use crate::sorted_merge::sort_key_range::SortKeyBatchRange;
-    use crate::sorted_merge::combiner::RangeCombiner;
 
     fn create_batch_one_col_i32(name: &str, vec: &[i32]) -> RecordBatch {
         let a: ArrayRef = Arc::new(Int32Array::from_slice(vec));
@@ -761,7 +703,6 @@ mod tests {
                 "+----+-------+",
             ]
             , &[s1b1.clone(), s1b2.clone(), s1b3.clone(), s1b4.clone(), s1b5.clone()]);
-
         
         let s2b1 = create_batch_i32(vec!["id", "b"], vec![&[3, 4], &[20001, 20002]]);
         let s2b2 = create_batch_i32(vec!["id", "b"], vec![&[4, 5], &[20003, 20004]]);
@@ -838,7 +779,6 @@ mod tests {
                 options: Default::default(),
             })
             .collect();
-
         
         let merge_stream = SortedStreamMerger::new_from_streams(
             vec![s1, s2, s3],
