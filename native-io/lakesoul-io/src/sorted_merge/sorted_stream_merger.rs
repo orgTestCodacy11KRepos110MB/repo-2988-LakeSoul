@@ -498,6 +498,7 @@ mod tests {
     use datafusion::execution::context::TaskContext;
     use datafusion::physical_expr::PhysicalSortExpr;    
     use datafusion::physical_plan::expressions::col;
+    use datafusion::assert_batches_eq;
     use datafusion::physical_plan::{SendableRecordBatchStream, memory::MemoryExec, ExecutionPlan, common};
 
 
@@ -527,7 +528,7 @@ mod tests {
             ));
         }
 
-        let schema = get_test_schema();
+        let schema = get_test_file_schema();
         let sort = vec![PhysicalSortExpr {
             expr: col("int0", &schema).unwrap(),
             options: SortOptions::default(),
@@ -543,7 +544,7 @@ mod tests {
 
     }
 
-    pub fn get_test_schema() -> SchemaRef {
+    pub fn get_test_file_schema() -> SchemaRef {
         let schema = Schema::new(vec![
             Field::new("str0", DataType::Utf8, false),
             Field::new("str1", DataType::Utf8, false),
@@ -611,7 +612,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sort_perserving_stream() {
+    async fn test_sorted_stream_merger() {
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
         let s1b1 = create_batch_one_col_i32("a", &[1, 1, 3, 3, 4]);
@@ -669,6 +670,163 @@ mod tests {
             &sort_exprs, 
             2).unwrap();
         let merged = common::collect(Box::pin(merge_stream)).await.unwrap();
-        print_batches(&merged);
+        assert_batches_eq!(
+            &[
+                "+----+",
+                "| a  |",
+                "+----+",
+                "| 1  |",
+                "| 3  |",
+                "| 4  |",
+                "| 5  |",
+                "| 6  |",
+                "| 7  |",
+                "| 9  |",
+                "| 10 |",
+                "+----+",
+            ]
+            , &merged);
     }
+
+    fn create_batch_i32(names: Vec<&str>, values: Vec<&[i32]>) -> RecordBatch {
+        let values = values.into_iter().map(|vec| Arc::new(Int32Array::from_slice(vec))as ArrayRef).collect::<Vec<ArrayRef>>();
+        let iter = names.into_iter().zip(values).collect::<Vec<_>>();
+        RecordBatch::try_from_iter(iter).unwrap()
+    }
+
+
+
+    #[tokio::test]
+    async fn test_sorted_stream_merger_multi_columns() {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+        let s1b1 = create_batch_i32(vec!["id", "a"], vec![&[1, 1, 3, 3, 4], &[10001,10002,10003,10004,10005]]);
+        let s1b2 = create_batch_i32(vec!["id", "a"], vec![&[4, 5], &[10006, 10007]]);
+        let s1b3 = create_batch_i32(vec!["id", "a"], vec![&[], &[]]);
+        let s1b4 = create_batch_i32(vec!["id", "a"], vec![&[5], &[10008]]);
+        let s1b5 = create_batch_i32(vec!["id", "a"], vec![&[5, 5, 6], &[10009, 10010, 10011]]);
+        assert_batches_eq!(
+            &[
+                "+----+-------+",
+                "| id | a     |",
+                "+----+-------+",
+                "| 1  | 10001 |",
+                "| 1  | 10002 |",
+                "| 3  | 10003 |",
+                "| 3  | 10004 |",
+                "| 4  | 10005 |",
+                "| 4  | 10006 |",
+                "| 5  | 10007 |",
+                "| 5  | 10008 |",
+                "| 5  | 10009 |",
+                "| 5  | 10010 |",
+                "| 6  | 10011 |",
+                "+----+-------+",
+            ]
+            , &[s1b1.clone(), s1b2.clone(), s1b3.clone(), s1b4.clone(), s1b5.clone()]);
+
+        
+        let s2b1 = create_batch_i32(vec!["id", "b"], vec![&[3, 4], &[20001, 20002]]);
+        let s2b2 = create_batch_i32(vec!["id", "b"], vec![&[4, 5], &[20003, 20004]]);
+        let s2b3 = create_batch_i32(vec!["id", "b"], vec![&[], &[]]);
+        let s2b4 = create_batch_i32(vec!["id", "b"], vec![&[5], &[20005]]);
+        let s2b5 = create_batch_i32(vec!["id", "b"], vec![&[5, 7], &[20006, 20007]]);
+        assert_batches_eq!(
+            &[
+                "+----+-------+",
+                "| id | b     |",
+                "+----+-------+",
+                "| 3  | 20001 |",
+                "| 4  | 20002 |",
+                "| 4  | 20003 |",
+                "| 5  | 20004 |",
+                "| 5  | 20005 |",
+                "| 5  | 20006 |",
+                "| 7  | 20007 |",
+                "+----+-------+",
+            ]
+            , &[s2b1.clone(), s2b2.clone(), s2b3.clone(), s2b4.clone(), s2b5.clone()]);
+        let s3b1 = create_batch_i32(vec!["id", "c"], vec![&[], &[]]);
+        let s3b2 = create_batch_i32(vec!["id", "c"], vec![&[5, 5], &[30001, 30002]]);
+        let s3b3 = create_batch_i32(vec!["id", "c"], vec![&[5, 7], &[30003, 30004]]);
+        let s3b4 = create_batch_i32(vec!["id", "c"], vec![&[], &[]]);
+        let s3b5 = create_batch_i32(vec!["id", "c"], vec![&[7, 9], &[30005, 30006]]);
+        let s3b6 = create_batch_i32(vec!["id", "c"], vec![&[10], &[30007]]);
+        assert_batches_eq!(
+            &[
+                "+----+-------+",
+                "| id | c     |",
+                "+----+-------+",
+                "| 5  | 30001 |",
+                "| 5  | 30002 |",
+                "| 5  | 30003 |",
+                "| 7  | 30004 |",
+                "| 7  | 30005 |",
+                "| 9  | 30006 |",
+                "| 10 | 30007 |",
+                "+----+-------+",
+            ]
+            , &[s3b1.clone(), s3b2.clone(), s3b3.clone(), s3b4.clone(), s3b5.clone(), s3b6.clone()]);
+        
+        let s1 = create_stream(
+            1,
+            vec![s1b1.clone(), s1b2.clone(), s1b3.clone(), s1b4.clone(), s1b5.clone()],
+            task_ctx.clone(),
+            vec!["id"],
+        ).await.unwrap();
+        let s2 = create_stream(
+            2,
+            vec![s2b1.clone(), s2b2.clone(), s2b3.clone(), s2b4.clone(), s2b5.clone()],
+            task_ctx.clone(),
+            vec!["id"],
+        ).await.unwrap();
+        let s3 = create_stream(
+            3,
+            vec![s3b1.clone(), s3b2.clone(), s3b3.clone(), s3b4.clone(), s3b5.clone(), s3b6.clone()],
+            task_ctx.clone(),
+            vec!["id"],
+        ).await.unwrap();
+
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Int32, false), 
+            Field::new("a", DataType::Int32, true), 
+            Field::new("b", DataType::Int32, true), 
+            Field::new("c", DataType::Int32, true), ]);
+
+        let sort_fields = vec!["id"];
+        let sort_exprs: Vec<_> = sort_fields
+            .into_iter()
+            .map(|field| PhysicalSortExpr {
+                expr: col(field, &schema).unwrap(),
+                options: Default::default(),
+            })
+            .collect();
+
+        
+        let merge_stream = SortedStreamMerger::new_from_streams(
+            vec![s1, s2, s3],
+            Arc::new(schema),
+            &sort_exprs, 
+            2)
+            .unwrap();
+        let merged = common::collect(Box::pin(merge_stream)).await.unwrap();
+        assert_batches_eq!(
+            &[
+                "+----+-------+-------+-------+",
+                "| id | a     | b     | c     |",
+                "+----+-------+-------+-------+",
+                "| 1  | 10002 |       |       |",
+                "| 3  | 10004 | 20001 |       |",
+                "| 4  | 10006 | 20003 |       |",
+                "| 5  | 10010 | 20006 | 30003 |",
+                "| 6  | 10011 |       |       |",
+                "| 7  |       | 20007 | 30005 |",
+                "| 9  |       |       | 30006 |",
+                "| 10 |       |       | 30007 |",
+                "+----+-------+-------+-------+",
+            ], 
+            &merged);
+    }
+
+
 }

@@ -21,12 +21,17 @@ impl MergeOperator{
     pub fn merge_primitive<T:ArrowPrimitiveType>(&self, ranges: &Vec<SortKeyArrayRange>) -> Option<T::Native> {
         match self {
             MergeOperator::UseLast => {
-                let range = ranges.last().unwrap();
-                if range.array().as_ref().is_valid(range.end_row - 1) {
-                    return Some(as_primitive_array::<T>(range.array().as_ref()).value(range.end_row - 1))
-                } else {
-                    return None
+                match ranges.last() {
+                    None => None,
+                    Some(range) => {
+                        if range.array().as_ref().is_valid(range.end_row - 1) {
+                            Some(as_primitive_array::<T>(range.array().as_ref()).value(range.end_row - 1))
+                        } else {
+                            None
+                        }
+                    }
                 }
+                
             },
             MergeOperator::Sum => {
                 match T::DATA_TYPE {
