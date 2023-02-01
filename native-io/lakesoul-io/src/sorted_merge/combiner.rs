@@ -140,8 +140,6 @@ impl MinHeapSortKeyBatchRangeCombiner{
 
         self.in_progress.clear();
 
-        // todo!("drain exhausted batch");
-
         RecordBatch::try_new(self.schema.clone(), columns)
     }
 

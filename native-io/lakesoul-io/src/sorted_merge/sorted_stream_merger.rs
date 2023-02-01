@@ -78,7 +78,7 @@ pub(crate) struct SortedStreamMerger
 
     /// Maintain a flag for each stream denoting if the current cursor
     /// has finished and needs to poll from the stream
-    window_finished: Vec<bool>,
+    range_finished: Vec<bool>,
 
     // /// The accumulated row indexes for the next record batch
     // in_progress: Vec<RowIndex>,
@@ -105,10 +105,6 @@ impl SortedStreamMerger
         batch_size: usize,
     ) -> Result<Self> {
         let streams_num = streams.len();
-        // let batches = (0..streams_num)
-        //     .into_iter()
-        //     .map(|_| VecDeque::new())
-        //     .collect();
         let wrappers:Vec<Fuse<SendableRecordBatchStream>> = streams.into_iter().map(|s| s.stream.fuse()).collect();
 
         let sort_fields = expressions
@@ -124,8 +120,7 @@ impl SortedStreamMerger
 
         Ok(Self {
             schema,
-            // batches,
-            window_finished: vec![true; streams_num],
+            range_finished: vec![true; streams_num],
             streams: MergingStreams::new(wrappers),
             column_expressions: expressions.iter().map(|x| x.expr.clone()).collect(),
             aborted: false,
@@ -142,8 +137,8 @@ impl SortedStreamMerger
         cx: &mut Context<'_>,
         idx: usize,
     ) -> Poll<ArrowResult<()>> {
-        if !self.window_finished[idx] {
-            // Cursor is not finished - don't need a new RecordBatch yet
+        if !self.range_finished[idx] {
+            // Range is not finished - don't need a new RecordBatch yet
             return Poll::Ready(Ok(()));
         }
         let mut empty_batch = false;
@@ -180,7 +175,7 @@ impl SortedStreamMerger
                         let (batch, rows) = (Arc::new(batch), Arc::new(rows));
                         let range = SortKeyBatchRange::new_and_init(0, idx, batch.clone(), rows.clone());
 
-                        self.window_finished[idx] = false;
+                        self.range_finished[idx] = false;
 
                         self.range_combiner.push_range(Reverse(range));
                         
@@ -236,7 +231,7 @@ impl SortedStreamMerger
                     if !range.is_finished() {
                         self.range_combiner.push_range(Reverse(range))
                     } else {
-                        self.window_finished[stream_idx] = true;
+                        self.range_finished[stream_idx] = true;
                         match futures::ready!(self.maybe_poll_stream(cx, stream_idx)) {
                             Ok(_) => {}
                             Err(e) => {
