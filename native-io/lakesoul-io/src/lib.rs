@@ -16,7 +16,6 @@
 #![feature(new_uninit)]
 #![feature(get_mut_unchecked)]
 #![feature(async_closure)]
-#![feature(let_chains)]
 
 extern crate core;
 

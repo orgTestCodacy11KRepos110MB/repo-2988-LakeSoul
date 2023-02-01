@@ -1,34 +1,20 @@
-use crate::sorted_merge::sorted_stream_merger::SortKeyRange;
+use std::fmt::Debug;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+
 use crate::sorted_merge::sort_key_range::{SortKeyBatchRange, SortKeyArrayRange, SortKeyArrayRanges};
 use crate::sorted_merge::merge_operator::MergeOperator;
-
-
-use async_trait::async_trait;
-use dary_heap::DaryHeap;
-use datafusion::error::Result;
-use futures::future::try_join_all;
-use smallvec::SmallVec;
 
 use arrow::{error::Result as ArrowResult, 
     error::ArrowError,  
     record_batch::RecordBatch, 
-    datatypes::{SchemaRef, DataType, ArrowPrimitiveType, ArrowNativeType},
+    datatypes::{SchemaRef, DataType, ArrowPrimitiveType},
     array::{
-        make_array as make_arrow_array, ArrayData, Array, ArrayRef, Int16Builder, PrimitiveBuilder,
+        make_array as make_arrow_array, Array, ArrayRef, PrimitiveBuilder,
         BooleanBuilder, OffsetSizeTrait, GenericStringBuilder
     },
-    buffer::Buffer,
 };
 use arrow_array::types::*;
-
-
-use std::fmt::{Debug, Formatter};
-use std::cmp::Reverse;
-use std::sync::Arc;
-use std::ops::Deref;
-use std::borrow::Borrow;
-use std::collections::BinaryHeap;
-use std::pin::Pin;
 
 
 #[derive(Debug)]
@@ -167,8 +153,8 @@ impl MinHeapSortKeyBatchRangeCombiner{
 fn merge_sort_key_array_ranges_with_primitive<T:ArrowPrimitiveType>(capacity:usize, ranges:&Vec<Vec<SortKeyArrayRange>>, merge_operator:&MergeOperator) ->ArrayRef {
     let mut array_data_builder = PrimitiveBuilder::<T>::with_capacity(capacity);
     for i in 0..ranges.len() {
-        let ranges_pre_row = ranges[i].clone();
-        let res = merge_operator.merge_primitive::<T>(&ranges_pre_row);
+        let ranges_of_row = ranges[i].clone();
+        let res = merge_operator.merge_primitive::<T>(&ranges_of_row);
         match res.is_some() {
             true => array_data_builder.append_value(res.unwrap()),
             false => array_data_builder.append_null()
